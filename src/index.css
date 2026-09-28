@@ -1,0 +1,107 @@
+@import "tailwindcss";
+
+@layer base {
+  body {
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  }
+}
+
+/* Custom scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #f1f5f9;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* Print Styles */
+@page {
+  margin: 12mm 10mm;
+}
+
+@page suratIjinPage {
+  size: 20.5cm 16cm;
+  margin: 0;
+}
+
+@media print {
+  .no-print,
+  nav,
+  aside,
+  header,
+  .btn-action,
+  button:not(.allow-print) {
+    display: none !important;
+  }
+
+  body {
+    background: #ffffff !important;
+    color: #000000 !important;
+  }
+
+  main {
+    padding: 0 !important;
+    margin: 0 !important;
+    max-width: 100% !important;
+    width: 100% !important;
+  }
+
+  .print-page-break {
+    page-break-before: always;
+    break-before: page;
+  }
+
+  .print-avoid-break {
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+
+  /* Requirement 1: [FOOTER .PDF] Tambahkan Footer pada seluruh hasil export .pdf khusus pada folder project ini dengan text : "Divisi Produksi I - All Rights Reserved". */
+  .pdf-print-footer {
+    display: block !important;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    text-align: center;
+    font-size: 10px;
+    font-weight: 600;
+    color: #64748b;
+    padding: 6px 0;
+    border-top: 1px solid #e2e8f0;
+    background: #ffffff;
+  }
+
+  /* Special mode for printing Surat Permohonan Ijin */
+  body.printing-surat-ijin > *:not(.surat-ijin-container-active) {
+    display: none !important;
+  }
+
+  body.printing-surat-ijin .surat-ijin-container-active {
+    position: static !important;
+    background: none !important;
+    padding: 0 !important;
+    display: block !important;
+  }
+
+  body.printing-surat-ijin .surat-ijin-paper {
+    page: suratIjinPage;
+    transform: none !important;
+    margin: 0 !important;
+    box-shadow: none !important;
+    width: 20.5cm !important;
+    height: 16cm !important;
+  }
+}
+
+.pdf-print-footer {
+  display: none;
+}

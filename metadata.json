@@ -1,0 +1,6 @@
+{
+  "name": "HR Staff System — PT Batu Karang",
+  "description": "Sistem Manajemen Presensi, Lembur, Payroll, dan Database Staff Divisi Produksi I PT Batu Karang dengan Arsitektur Headless GAS dan Offline-First Cache.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
