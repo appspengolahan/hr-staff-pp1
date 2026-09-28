@@ -2,7 +2,6 @@
  * gasService[HRStaff].ts
  * Headless Google Apps Script (GAS) Service & Offline-First Data Cache Engine
  * PT Batu Karang — Divisi Produksi I
- * Developed by Lalu Mahendra
  */
 
 import {
@@ -90,7 +89,6 @@ class GASDataStore {
       const cachedPerforma = localStorage.getItem('hrstaff_cache_performa');
       this.performa = cachedPerforma ? JSON.parse(cachedPerforma) : [];
 
-      // Auto update calculation of sisa hari for PKWT & Calon
       this.recalculateDynamicDates();
       this.persistToLocalStorage();
     } catch (err) {
@@ -103,7 +101,6 @@ class GASDataStore {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    // Update Calon Karyawan sisa hari
     this.calon = this.calon.map((c) => {
       if (c.tanggalAkhir) {
         const ta = new Date(c.tanggalAkhir);
@@ -163,9 +160,6 @@ class GASDataStore {
     return this.isSyncing;
   }
 
-  /**
-   * Reset seluruh database lokal kembali ke bawaan
-   */
   public resetToDefaults() {
     this.staff = [...INITIAL_STAFF];
     this.presensi = [...INITIAL_PRESENSI];
@@ -177,9 +171,6 @@ class GASDataStore {
     this.persistToLocalStorage();
   }
 
-  /**
-   * Export all cached data as JSON string
-   */
   public exportCacheJSON(): string {
     return JSON.stringify(
       {
@@ -197,9 +188,6 @@ class GASDataStore {
     );
   }
 
-  /**
-   * Import data from JSON backup
-   */
   public importCacheJSON(jsonString: string): boolean {
     try {
       const data = JSON.parse(jsonString);
@@ -218,17 +206,13 @@ class GASDataStore {
     }
   }
 
-  /**
-   * Ping / Test Koneksi ke GAS Endpoint
-   */
   public async testGASConnection(): Promise<{ success: boolean; latencyMs: number; message: string }> {
     const start = performance.now();
     try {
-      // Send a ping request
       const pingUrl = `${this.endpointUrl}${this.endpointUrl.includes('?') ? '&' : '?'}action=ping`;
       const res = await fetch(pingUrl, {
         method: 'GET',
-        mode: 'no-cors', // Standard Google Apps Script cross-origin
+        mode: 'no-cors',
       });
       const latency = Math.round(performance.now() - start);
       return {
@@ -282,28 +266,27 @@ class GASDataStore {
       let lemburLoaded = 0;
       let calonLoaded = 0;
 
+      const cleanStr = (val: any, fallback = '') => {
+        if (val === undefined || val === null) return fallback;
+        return String(val).trim();
+      };
+
+      const cleanNum = (val: any, fallback = 0) => {
+        if (typeof val === 'number') return val;
+        if (!val) return fallback;
+        const n = Number(String(val).replace(/[^0-9.-]+/g, ''));
+        return isNaN(n) ? fallback : n;
+      };
+
       // 1. Process Staff List
       if (Array.isArray(data.staffList) && data.staffList.length > 0) {
-        const cleanStr = (val: any, fallback = '') => {
-          if (val === undefined || val === null) return fallback;
-          return String(val).trim();
-        };
-
-        const cleanNum = (val: any, fallback = 0) => {
-          if (typeof val === 'number') return val;
-          if (!val) return fallback;
-          const n = Number(String(val).replace(/[^0-9.-]+/g, ''));
-          return isNaN(n) ? fallback : n;
-        };
-
         const mappedStaff: StaffMember[] = data.staffList
           .filter((item: any) => {
             const rawNama = cleanStr(item.nama || item.namaStaff || item.namaKaryawan || item['NAMA'] || item['NAMA STAFF']);
             if (!rawNama) return false;
             const lower = rawNama.toLowerCase();
-            // Abaikan jika ternyata baris header atau nomor urut
             if (lower === 'id' || lower === 'no' || lower === 'nomor' || lower === 'nama' || lower === 'nama staff') return false;
-            if (/^\d+$/.test(rawNama)) return false; // Abaikan jika hanya berupa angka (misal "1", "2", "3")
+            if (/^\d+$/.test(rawNama)) return false;
             return true;
           })
           .map((item: any, idx: number) => {
@@ -509,9 +492,6 @@ class GASDataStore {
     }
   }
 
-  /**
-   * Sync manual dengan GAS
-   */
   public async syncWithGAS(): Promise<{ success: boolean; message: string }> {
     return this.pullDataFromGAS();
   }
@@ -553,7 +533,6 @@ class GASDataStore {
     return { success: true, message: `Profil ${nama} berhasil diperbarui.` };
   }
 
-  // Mutasi Karyawan
   public submitMutasi(data: {
     nama: string;
     tanggalEfektif: string;
@@ -566,7 +545,6 @@ class GASDataStore {
     if (!staff) return { success: false, message: `Staff tidak ditemukan: ${data.nama}` };
 
     let nilaiLama = '-';
-    // Match fields
     switch (data.jenisMutasi) {
       case 'Jabatan':
         nilaiLama = staff.jabatan;
@@ -647,7 +625,6 @@ class GASDataStore {
     return this.mutasi.filter((m) => m.nama.toLowerCase() === nama.toLowerCase());
   }
 
-  // Presensi & Ijin
   public getPresensiList(bulan?: number, tahun?: number, namaFilter?: string): PresensiItem[] {
     return this.presensi
       .filter((p) => {
@@ -743,7 +720,6 @@ class GASDataStore {
     return { success: true, message: 'Data presensi/ijin berhasil dihapus.' };
   }
 
-  // Lembur
   public getLemburList(tahun?: number): LemburItem[] {
     return this.lembur
       .filter((l) => (tahun ? l.tahun === tahun : true))
@@ -765,7 +741,6 @@ class GASDataStore {
 
     data.namaList.forEach((nama) => {
       const staff = this.getStaffByName(nama);
-      // Flat 2x tarif harian: ((GP + Tunjangan)/26) * 2
       const gp = staff?.gajiPokok || 3500000;
       const tunjangan = staff?.tunjangan || 500000;
       const nominal = Math.round(((gp + tunjangan) / 26) * 2);
@@ -793,7 +768,6 @@ class GASDataStore {
     };
   }
 
-  // Calon Karyawan
   public getCalonList(): CalonKaryawanItem[] {
     this.recalculateDynamicDates();
     return [...this.calon].sort((a, b) => a.sisaHari - b.sisaHari);
@@ -839,7 +813,6 @@ class GASDataStore {
     const c = this.calon[idx];
 
     if (data.status === 'Lolos') {
-      // Otomatis masukkan ke Database Karyawan (MASTER_STAFF) dengan status PKWT 1
       this.addStaff({
         nama: c.nama,
         status: 'PKWT 1',
@@ -887,14 +860,13 @@ class GASDataStore {
         sisaHari: sisa,
         status: 'Sedang Berjalan',
         jumlahPerpanjangan: c.jumlahPerpanjangan + 1,
-        catatan: (c.catatan ? c.catatan + ' | ' : '') + `Diperpanjang s.d ${data.tanggalAkhirBaru}. Alasan: ${data.alasan || '-'}`,
+        catatan: (c.catatan ? c.catatan + ' | ' : '') + `Diperpanjang s.d ${data.tanggalAkhirBaru}. Alasan: ${data.alasan || '-'}` ,
       };
       this.persistToLocalStorage();
       return { success: true, message: `Masa pelatihan ${c.nama} berhasil diperpanjang s.d ${data.tanggalAkhirBaru}.` };
     }
 
     if (data.status === 'Tidak Lolos') {
-      // Baris dikosongkan/dihapus dari daftar CALON_KARYAWAN
       this.calon = this.calon.filter((item) => item.rowNum !== data.rowNum);
       this.persistToLocalStorage();
       return {
@@ -906,7 +878,6 @@ class GASDataStore {
     return { success: false, message: 'Status tidak valid.' };
   }
 
-  // Link Arsip
   public getLinksForStaff(nama: string): LinkArsipItem[] {
     return this.links.filter((l) => l.nama.toLowerCase() === nama.toLowerCase());
   }
@@ -934,19 +905,6 @@ class GASDataStore {
     return { success: true, message: 'Link arsip berhasil dihapus.' };
   }
 
-  // ================= PERHITUNGAN PAYROLL & SLIP GAJI =================
-  /**
-   * Rumus Payroll TER PMK 168/2023 & Slip Gaji Resmi PT Batu Karang:
-   * (1) BPJS JHT & JP dihitung dari Gaji Pokok + Tunjangan PENUH (H+I), bukan K.
-   * (2) Rate BPJS JP = 1% (cap Rp 11.086.300 per Maret 2026).
-   * (3) BPJS Kesehatan = nominal TETAP per staff (AD).
-   * (4) Potongan Ijin = HariTidakDibayar * ((GajiPokok + Tunjangan) / 26).
-   * (5) Total Lembur = Flat 2x tarif harian per kejadian di bulan/tahun tsb.
-   * (6) Bruto K = GajiPokok + Tunjangan + Lembur - PotonganIjin.
-   * (7) Tarif TER = VLOOKUP Kategori TER A/B/C x Bruto K.
-   * (8) PPh21 = Bruto K * Tarif TER.
-   * (9) Gaji Diterima = Bruto K - (JHT + JP + BPJS Ks + PPh21).
-   */
   public calculateSlipGaji(nama: string, bulan: number, tahun: number): SlipGajiCalculation {
     const staff = this.getStaffByName(nama);
     if (!staff) {
@@ -957,39 +915,41 @@ class GASDataStore {
     const tunjangan = staff.tunjangan || 0;
     const rateHarian = (gp + tunjangan) / 26;
 
-    // Hitung Hari Tidak Dibayar (Faktor Potongan) di bulan & tahun tsb
     const presensiBulan = this.presensi.filter(
       (p) => p.nama.toLowerCase() === nama.toLowerCase() && p.bulan === bulan && p.tahun === tahun
     );
-    const hariTidakDibayar = presensiBulan.reduce((sum, p) => sum + (p.faktorPotongan || 0), 0);
+    let hariTidakDibayar = presensiBulan.reduce((sum, p) => sum + (p.faktorPotongan || 0), 0);
+
+    if (hariTidakDibayar === 0 && this.performa.length > 0) {
+      const perf = this.performa.find((p) => p.nama && p.nama.toLowerCase() === nama.toLowerCase());
+      if (perf && Array.isArray(perf.bulanan)) {
+        const bItem = perf.bulanan.find((b: any) => b.bulan === bulan);
+        if (bItem && bItem.menit > 0) {
+          hariTidakDibayar = bItem.menit / 420;
+        }
+      }
+    }
+
     const potonganIjin = Math.round(hariTidakDibayar * rateHarian);
 
-    // Hitung Total Lembur di bulan & tahun tsb
     const lemburBulan = this.lembur.filter(
       (l) => l.nama.toLowerCase() === nama.toLowerCase() && l.bulan === bulan && l.tahun === tahun
     );
     const totalLembur = lemburBulan.reduce((sum, l) => sum + (l.nominal || 0), 0);
 
-    // Total Gaji Bruto K (setelah potongan ijin)
     const bruto = Math.max(0, gp + tunjangan + totalLembur - potonganIjin);
 
-    // BPJS JHT (2% dari GP + Tunjangan Penuh)
     const bpjsJht = Math.round((gp + tunjangan) * 0.02);
-
-    // BPJS JP (1% dari GP + Tunjangan Penuh, maks basis Rp 11.086.300)
     const basisJp = Math.min(gp + tunjangan, 11086300);
     const bpjsJp = Math.round(basisJp * 0.01);
     const totalBpjsTk = bpjsJht + bpjsJp;
 
-    // BPJS Kesehatan (nominal tetap per staff dari MASTER_STAFF AD)
     const bpjsKesehatan = staff.bpjsKesehatanNominal || 0;
 
-    // PPh21 TER (PMK 168/2023)
     const kategoriTer = getKategoriTER(staff.statusPTKP);
     const tarifPph21 = getTarifTER(bruto, kategoriTer);
     const pph21 = Math.round(bruto * tarifPph21);
 
-    // Gaji Diterima (Take Home Pay)
     const gajiDiterima = Math.max(0, bruto - bpjsJht - bpjsJp - bpjsKesehatan - pph21);
 
     return {
@@ -1017,10 +977,6 @@ class GASDataStore {
     };
   }
 
-  /**
-   * Beban Gaji Dashboard Divisi Produksi I
-   * Gaji Pokok + Tunjangan Jabatan seluruh staff aktif vs Potongan Ijin
-   */
   public getDashboardBebanGaji(bulan: number, tahun: number) {
     const aktifStaff = this.staff.filter((s) => s.statusAktif === 'Aktif');
     let totalKetentuan = 0;
@@ -1030,18 +986,16 @@ class GASDataStore {
       const nominal = (s.gajiPokok || 0) + (s.tunjangan || 0);
       totalKetentuan += nominal;
 
-      // Cari presensi bulan ini dari log presensi
       let faktorStaff = this.presensi
         .filter((p) => p.nama.toLowerCase() === s.nama.toLowerCase() && p.bulan === bulan && p.tahun === tahun)
         .reduce((sum, p) => sum + (p.faktorPotongan || 0), 0);
 
-      // Jika log presensi kosong, gunakan data menit izin bulan ini dari LOG_PERFORMA
       if (faktorStaff === 0 && this.performa.length > 0) {
         const perf = this.performa.find((p) => p.nama && p.nama.toLowerCase() === s.nama.toLowerCase());
         if (perf && Array.isArray(perf.bulanan)) {
           const bulanItem = perf.bulanan.find((b: any) => b.bulan === bulan);
           if (bulanItem && bulanItem.menit > 0) {
-            faktorStaff = bulanItem.menit / 420; // 420 menit per hari kerja normal
+            faktorStaff = bulanItem.menit / 420;
           }
         }
       }
@@ -1057,9 +1011,6 @@ class GASDataStore {
     };
   }
 
-  /**
-   * Rekap Tahunan Kehadiran per Staff (Jan - Des)
-   */
   public getRekapTahunan(tahun: number, namaFilter?: string) {
     const list = this.staff.filter((s) => {
       if (namaFilter && namaFilter !== 'Semua') {
@@ -1068,11 +1019,10 @@ class GASDataStore {
       return true;
     });
 
-    const menitPerBulan = 10440; // 26 hari (22x420 + 4x300)
+    const menitPerBulan = 10440;
     const menitPerTahun = menitPerBulan * 12;
 
     return list.map((s) => {
-      // Prioritaskan matriks LOG_PERFORMA asli jika tersedia
       const perf = this.performa.find((p) => p.nama && p.nama.toLowerCase() === s.nama.toLowerCase());
       if (perf && Array.isArray(perf.bulanan) && perf.bulanan.length === 12) {
         return {
@@ -1106,7 +1056,7 @@ class GASDataStore {
         bulanan,
         totalIjin,
         totalTersedia: menitPerTahun,
-        pctKehadiran: Math.round(pctKehadiran * 100) / 100, // 2 decimal precision
+        pctKehadiran: Math.round(pctKehadiran * 100) / 100,
       };
     });
   }
