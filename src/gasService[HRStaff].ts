@@ -243,24 +243,228 @@ class GASDataStore {
   }
 
   /**
-   * Sync manual dengan GAS
+   * Tarik Data Nyata dari Google Apps Script / Spreadsheet
    */
-  public async syncWithGAS(): Promise<{ success: boolean; message: string }> {
+  public async pullDataFromGAS(): Promise<{
+    success: boolean;
+    message: string;
+    counts?: { staff: number; presensi: number; lembur: number; calon: number };
+    debug?: any;
+  }> {
     this.isSyncing = true;
     this.notify();
+
     try {
-      // Simulate/perform silent sync to GAS endpoint
-      await new Promise((resolve) => setTimeout(resolve, 800));
+      const url = `${this.endpointUrl}${this.endpointUrl.includes('?') ? '&' : '?'}action=getAllData`;
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          Accept: 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error ${response.status}: ${response.statusText}`);
+      }
+
+      const data = await response.json();
+
+      if (data.status !== 'success') {
+        throw new Error(data.message || 'Gagal mengambil data dari Google Apps Script');
+      }
+
+      let staffLoaded = 0;
+      let presensiLoaded = 0;
+      let lemburLoaded = 0;
+      let calonLoaded = 0;
+
+      // 1. Process Staff List
+      if (Array.isArray(data.staffList) && data.staffList.length > 0) {
+        const mappedStaff: StaffMember[] = data.staffList
+          .filter((item: any) => item.nama && String(item.nama).trim() !== '')
+          .map((item: any, idx: number) => {
+            const cleanNum = (val: any, fallback = 0) => {
+              if (typeof val === 'number') return val;
+              if (!val) return fallback;
+              const n = Number(String(val).replace(/[^0-9.-]+/g, ''));
+              return isNaN(n) ? fallback : n;
+            };
+
+            const cleanStr = (val: any, fallback = '') => {
+              if (val === undefined || val === null) return fallback;
+              return String(val).trim();
+            };
+
+            return {
+              id: item.id ? Number(item.id) || idx + 1 : idx + 1,
+              nama: cleanStr(item.nama),
+              status: (cleanStr(item.status) || 'TETAP') as any,
+              jabatan: cleanStr(item.jabatan) || 'Staff Operasional',
+              level: cleanStr(item.level) || 'Staff Pelaksana',
+              sekup: (cleanStr(item.sekup).toLowerCase().includes('admin') ? 'Administrasi' : 'Operasional') as any,
+              statusAktif: (cleanStr(item.statusAktif).toLowerCase().includes('non') ? 'Non Aktif' : 'Aktif') as any,
+              jk: (cleanStr(item.jk).toLowerCase().startsWith('p') ? 'Perempuan' : 'Laki-laki') as any,
+              nik: cleanStr(item.nik) || `350712${1000000000 + idx}`,
+              kk: cleanStr(item.kk),
+              npwp: cleanStr(item.npwp),
+              email: cleanStr(item.email) || `${cleanStr(item.nama).toLowerCase().replace(/[^a-z0-9]/g, '')}@batukarang.id`,
+              bank: cleanStr(item.bank) || 'BCA',
+              rekening: cleanStr(item.rekening),
+              telp: cleanStr(item.telp),
+              domisili: cleanStr(item.domisili) || 'Malang',
+              gajiPokok: cleanNum(item.gajiPokok, 3500000),
+              tunjangan: cleanNum(item.tunjangan, 500000),
+              statusPTKP: (cleanStr(item.statusPTKP) || 'TK/0') as any,
+              bpjsKesehatanNominal: cleanNum(item.bpjsKesehatanNominal, 100000),
+              proyeksiJabatan: cleanStr(item.proyeksiJabatan),
+              sanksi: cleanStr(item.sanksi) || '-',
+              awalPKWT: cleanStr(item.awalPKWT),
+              akhirPKWT: cleanStr(item.akhirPKWT),
+              limitPKWT: cleanStr(item.limitPKWT),
+              plafonLevel: cleanStr(item.plafonLevel),
+              deskripsiJabatan: cleanStr(item.deskripsiJabatan),
+              faskes: cleanStr(item.faskes),
+            };
+          });
+
+        if (mappedStaff.length > 0) {
+          this.staff = mappedStaff;
+          staffLoaded = mappedStaff.length;
+        }
+      }
+
+      // 2. Process Presensi List
+      if (Array.isArray(data.presensiList) && data.presensiList.length > 0) {
+        const mappedPresensi: PresensiItem[] = data.presensiList
+          .filter((p: any) => p.nama && p.tanggal)
+          .map((p: any, idx: number) => {
+            const d = new Date(p.tanggal);
+            const namaHari = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
+            const hari = !isNaN(d.getDay()) ? namaHari[d.getDay()] : 'Senin';
+            const durasi = Number(p.durasi) || 0;
+            const jenisIjin = p.jenisIjin || 'Hadir';
+
+            return {
+              rowNum: Number(p.rowNum) || idx + 6,
+              tanggal: String(p.tanggal).slice(0, 10),
+              hari,
+              nama: String(p.nama).trim(),
+              sekup: (p.sekup || 'Operasional') as any,
+              jamAwal: p.jamAwal || '07:30',
+              jamAkhir: p.jamAkhir || '16:00',
+              durasi,
+              jenisIjin: jenisIjin as any,
+              keperluan: p.keperluan || '-',
+              faktorPotongan: Number(p.faktorPotongan) || computeFaktorPotongan(jenisIjin, durasi),
+              lampiran: p.lampiran === 'Ya' ? 'Ya' : 'Tidak',
+              catatan: p.catatan,
+              approvalManager: p.approvalManager || 'Disetujui',
+              buktiUrl: p.buktiUrl,
+              bulan: !isNaN(d.getMonth()) ? d.getMonth() + 1 : 1,
+              tahun: !isNaN(d.getFullYear()) ? d.getFullYear() : 2026,
+            };
+          });
+
+        if (mappedPresensi.length > 0) {
+          this.presensi = mappedPresensi;
+          presensiLoaded = mappedPresensi.length;
+        }
+      }
+
+      // 3. Process Lembur List
+      if (Array.isArray(data.lemburList) && data.lemburList.length > 0) {
+        const mappedLembur: LemburItem[] = data.lemburList
+          .filter((l: any) => l.nama && l.tanggal)
+          .map((l: any, idx: number) => {
+            const d = new Date(l.tanggal);
+            return {
+              rowNum: Number(l.rowNum) || idx + 6,
+              tanggal: String(l.tanggal).slice(0, 10),
+              nama: String(l.nama).trim(),
+              sekup: (l.sekup || 'Operasional') as any,
+              kategori: (l.kategori || 'Hari Kerja Biasa (Weekday)') as any,
+              jamMulai: l.jamMulai || '16:00',
+              jamSelesai: l.jamSelesai || '18:00',
+              nominal: Number(l.nominal) || 200000,
+              catatan: l.catatan,
+              bulan: !isNaN(d.getMonth()) ? d.getMonth() + 1 : 1,
+              tahun: !isNaN(d.getFullYear()) ? d.getFullYear() : 2026,
+            };
+          });
+
+        if (mappedLembur.length > 0) {
+          this.lembur = mappedLembur;
+          lemburLoaded = mappedLembur.length;
+        }
+      }
+
+      // 4. Process Calon Karyawan
+      if (Array.isArray(data.calonList) && data.calonList.length > 0) {
+        const mappedCalon: CalonKaryawanItem[] = data.calonList
+          .filter((c: any) => c.nama)
+          .map((c: any, idx: number) => {
+            const tm = new Date(c.tanggalMulai || '2026-01-01');
+            const ta = new Date(c.tanggalAkhir || '2026-03-31');
+            const durasi = Math.max(1, Math.round((ta.getTime() - tm.getTime()) / (1000 * 60 * 60 * 24)) + 1);
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            const sisa = Math.round((ta.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+
+            return {
+              rowNum: Number(c.rowNum) || idx + 6,
+              nama: String(c.nama).trim(),
+              sekup: (c.sekup || 'Operasional') as any,
+              proyeksiJabatan: c.proyeksiJabatan || 'Staff Operasional',
+              mentor: c.mentor || 'Lalu Mahendra Ali Akbar',
+              tanggalMulai: String(c.tanggalMulai || '2026-01-01').slice(0, 10),
+              tanggalAkhir: String(c.tanggalAkhir || '2026-03-31').slice(0, 10),
+              durasi,
+              sisaHari: sisa,
+              status: (c.status || 'Sedang Berjalan') as any,
+              jumlahPerpanjangan: Number(c.jumlahPerpanjangan) || 0,
+              catatan: c.catatan || '',
+            };
+          });
+
+        if (mappedCalon.length > 0) {
+          this.calon = mappedCalon;
+          calonLoaded = mappedCalon.length;
+        }
+      }
+
       this.lastSyncTime = new Date().toISOString();
+      this.recalculateDynamicDates();
       this.persistToLocalStorage();
+
       this.isSyncing = false;
       this.notify();
-      return { success: true, message: 'Data lokal tersinkronisasi otomatis dengan Google Sheets.' };
+
+      return {
+        success: true,
+        message: `Berhasil menarik data asli dari Spreadsheet: ${staffLoaded} Staff, ${presensiLoaded} Presensi, ${lemburLoaded} Lembur, ${calonLoaded} Calon.`,
+        counts: {
+          staff: staffLoaded,
+          presensi: presensiLoaded,
+          lembur: lemburLoaded,
+          calon: calonLoaded,
+        },
+        debug: data.debug || {},
+      };
     } catch (err: any) {
       this.isSyncing = false;
       this.notify();
-      return { success: false, message: 'Gagal sync: ' + err.message };
+      return {
+        success: false,
+        message: `Gagal menarik data dari Google Sheets: ${err.message || 'Koneksi error'}`,
+      };
     }
+  }
+
+  /**
+   * Sync manual dengan GAS
+   */
+  public async syncWithGAS(): Promise<{ success: boolean; message: string }> {
+    return this.pullDataFromGAS();
   }
 
   // ================= DATA GETTERS & MUTATORS =================
