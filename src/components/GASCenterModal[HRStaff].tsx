@@ -37,6 +37,8 @@ export const GASCenterModal: React.FC<GASCenterModalProps> = ({ isOpen, onClose,
     message?: string;
   }>({ tested: false });
   const [isTesting, setIsTesting] = useState(false);
+  const [isPulling, setIsPulling] = useState(false);
+  const [pullResult, setPullResult] = useState<{ success: boolean; message: string } | null>(null);
   const [copied, setCopied] = useState(false);
   const [jsonViewerOpen, setJsonViewerOpen] = useState(false);
   const [jsonContent, setJsonContent] = useState('');
@@ -49,9 +51,17 @@ export const GASCenterModal: React.FC<GASCenterModalProps> = ({ isOpen, onClose,
   const lemburCount = gasStore.getLemburList().length;
   const calonCount = gasStore.getCalonList().length;
 
-  const handleSaveUrl = () => {
+  const handleSaveUrl = async () => {
     gasStore.setEndpointUrl(url);
-    alert('Endpoint URL berhasil disimpan.');
+    setIsPulling(true);
+    const result = await gasStore.pullDataFromGAS();
+    setIsPulling(false);
+    if (result.success) {
+      onDataChanged();
+      alert(`Endpoint URL disimpan & berhasil menarik ${result.counts?.staff || 0} data staff asli!`);
+    } else {
+      alert('Endpoint URL berhasil disimpan.');
+    }
   };
 
   const handleResetUrl = () => {
@@ -61,6 +71,7 @@ export const GASCenterModal: React.FC<GASCenterModalProps> = ({ isOpen, onClose,
 
   const handleTestPing = async () => {
     setIsTesting(true);
+    setPullResult(null);
     const result = await gasStore.testGASConnection();
     setIsTesting(false);
     setTestResult({
@@ -69,6 +80,33 @@ export const GASCenterModal: React.FC<GASCenterModalProps> = ({ isOpen, onClose,
       latencyMs: result.latencyMs,
       message: result.message,
     });
+
+    if (result.success) {
+      setIsPulling(true);
+      const pullRes = await gasStore.pullDataFromGAS();
+      setIsPulling(false);
+      setPullResult({
+        success: pullRes.success,
+        message: pullRes.message,
+      });
+      if (pullRes.success) {
+        onDataChanged();
+      }
+    }
+  };
+
+  const handlePullData = async () => {
+    setIsPulling(true);
+    setPullResult(null);
+    const result = await gasStore.pullDataFromGAS();
+    setIsPulling(false);
+    setPullResult({
+      success: result.success,
+      message: result.message,
+    });
+    if (result.success) {
+      onDataChanged();
+    }
   };
 
   const handleExportJSON = () => {
@@ -182,7 +220,7 @@ export const GASCenterModal: React.FC<GASCenterModalProps> = ({ isOpen, onClose,
               </button>
             </div>
 
-            <div className="flex items-center gap-2 pt-1">
+            <div className="flex flex-wrap items-center gap-2 pt-1">
               <button
                 onClick={handleSaveUrl}
                 className="rounded-lg bg-blue-600 px-3.5 py-1.5 text-xs font-bold text-white hover:bg-blue-700 shadow-xs transition-colors"
@@ -206,7 +244,33 @@ export const GASCenterModal: React.FC<GASCenterModalProps> = ({ isOpen, onClose,
                 <Send className={`h-3.5 w-3.5 ${isTesting ? 'animate-spin' : ''}`} />
                 <span>{isTesting ? 'Menguji...' : 'Uji Ping Koneksi'}</span>
               </button>
+              <button
+                onClick={handlePullData}
+                disabled={isPulling}
+                className="rounded-lg border border-emerald-300 bg-emerald-600 px-3.5 py-1.5 text-xs font-bold text-white hover:bg-emerald-700 shadow-xs flex items-center gap-1.5 transition-colors disabled:opacity-60"
+                type="button"
+                title="Tarik seluruh data nama staff, presensi, dan lembur dari Google Spreadsheet asli"
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${isPulling ? 'animate-spin' : ''}`} />
+                <span>{isPulling ? 'Menarik Data...' : 'Tarik Data Asli Spreadsheet'}</span>
+              </button>
             </div>
+
+            {pullResult && (
+              <div
+                className={`mt-2 rounded-xl p-3 text-xs border ${
+                  pullResult.success
+                    ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
+                    : 'border-rose-200 bg-rose-50 text-rose-900'
+                }`}
+              >
+                <div className="flex items-center gap-1.5 font-bold mb-0.5">
+                  <Check className="h-4 w-4 text-emerald-600 shrink-0" />
+                  <span>{pullResult.success ? 'Sinkronisasi Data Berhasil' : 'Sinkronisasi Gagal'}</span>
+                </div>
+                <p className="text-[11px] opacity-90">{pullResult.message}</p>
+              </div>
+            )}
 
             {testResult.tested && (
               <div
