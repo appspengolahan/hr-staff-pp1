@@ -1,121 +1,148 @@
-import { 
-  StaffMember, 
-  PresensiItem, 
-  LemburItem, 
-  CalonKaryawanItem, 
-  MutasiItem, 
-  SlipGajiItem,
-  SummaryStatistik 
-} from './types[HRStaff]';
-import { 
-  initialStaffData, 
-  initialPresensiData, 
-  initialLemburData, 
-  initialCalonKaryawanData, 
-  initialMutasiData,
-  computeFaktorPotongan
-} from './mockData[HRStaff]';
-
-const LOCAL_STORAGE_KEY = 'hr_staff_pabrik_db_v2';
-export const DEFAULT_GAS_ENDPOINT = 'https://script.google.com/macros/s/AKfycby5aUndwYB1AjfM-d28J4-9I3Kuweh23Ef0TA4-hpYjlDIYVluTMuX8YkRodIqLs9ue/exec';
-
-export interface LocalCacheSchema {
-  staff: StaffMember[];
-  presensi: PresensiItem[];
-  lembur: LemburItem[];
-  calon: CalonKaryawanItem[];
-  mutasi: MutasiItem[];
-  slipGaji: SlipGajiItem[];
-  lastSync: string;
-  endpointUrl: string;
-}
-
 /**
- * Service Headless Offline-First untuk HR Staff Divisi Produksi I
+ * gasService[HRStaff].ts
+ * Headless Google Apps Script (GAS) Service & Offline-First Data Cache Engine
+ * PT Batu Karang — Divisi Produksi I
+ * Developed by Lalu Mahendra
  */
-class GASServiceStore {
+
+import {
+  INITIAL_CALON,
+  INITIAL_LEMBUR,
+  INITIAL_LINKS,
+  INITIAL_MUTASI,
+  INITIAL_PRESENSI,
+  INITIAL_STAFF,
+} from './mockData[HRStaff]';
+import {
+  computeFaktorPotongan,
+  getKategoriTER,
+  getTarifTER,
+} from './terPph21[HRStaff]';
+import {
+  CalonKaryawanItem,
+  LemburItem,
+  LinkArsipItem,
+  MutasiItem,
+  PresensiItem,
+  SlipGajiCalculation,
+  StaffMember,
+} from './types[HRStaff]';
+
+const CACHE_KEYS = {
+  STAFF: 'hrstaff_cache_staff',
+  PRESENSI: 'hrstaff_cache_presensi',
+  LEMBUR: 'hrstaff_cache_lembur',
+  CALON: 'hrstaff_cache_calon',
+  MUTASI: 'hrstaff_cache_mutasi',
+  LINKS: 'hrstaff_cache_links',
+  ENDPOINT_URL: 'hrstaff_gas_endpoint_url',
+  LAST_SYNC: 'hrstaff_last_sync_timestamp',
+  SIDEBAR_COLLAPSED: 'hrstaff_sidebar_collapsed',
+  USER_ROLE: 'hrstaff_current_user_role',
+};
+
+export const DEFAULT_GAS_ENDPOINT =
+  'https://script.google.com/macros/s/AKfycby5aUndwYBlAjfM-d28J4-9I3Kuweh23Ef0TA4-hpYjlDIYVluTMuX8YkRodIqLs9ue/exec';
+
+class GASDataStore {
   private staff: StaffMember[] = [];
   private presensi: PresensiItem[] = [];
   private lembur: LemburItem[] = [];
   private calon: CalonKaryawanItem[] = [];
   private mutasi: MutasiItem[] = [];
-  private slipGaji: SlipGajiItem[] = [];
+  private links: LinkArsipItem[] = [];
+  private performa: any[] = [];
   private endpointUrl: string = DEFAULT_GAS_ENDPOINT;
-  private lastSyncTime: string = new Date().toISOString();
+  private lastSyncTime: string = '';
   private isSyncing: boolean = false;
-  private listeners: Array<() => void> = [];
+  private listeners: (() => void)[] = [];
 
   constructor() {
-    this.initDatabase();
+    this.initFromLocalStorage();
   }
 
-  private initDatabase() {
+  private initFromLocalStorage() {
     try {
-      const cached = localStorage.getItem(LOCAL_STORAGE_KEY);
-      if (cached) {
-        const parsed: LocalCacheSchema = JSON.parse(cached);
-        this.staff = parsed.staff || initialStaffData;
-        this.presensi = parsed.presensi || initialPresensiData;
-        this.lembur = parsed.lembur || initialLemburData;
-        this.calon = parsed.calon || initialCalonKaryawanData;
-        this.mutasi = parsed.mutasi || initialMutasiData;
-        this.slipGaji = parsed.slipGaji || [];
-        this.endpointUrl = parsed.endpointUrl || DEFAULT_GAS_ENDPOINT;
-        this.lastSyncTime = parsed.lastSync || new Date().toISOString();
-      } else {
-        this.resetToDefaults();
-      }
-    } catch {
+      const storedUrl = localStorage.getItem(CACHE_KEYS.ENDPOINT_URL);
+      if (storedUrl) this.endpointUrl = storedUrl;
+
+      const storedSync = localStorage.getItem(CACHE_KEYS.LAST_SYNC);
+      this.lastSyncTime = storedSync || new Date().toISOString();
+
+      const cachedStaff = localStorage.getItem(CACHE_KEYS.STAFF);
+      this.staff = cachedStaff ? JSON.parse(cachedStaff) : [...INITIAL_STAFF];
+
+      const cachedPresensi = localStorage.getItem(CACHE_KEYS.PRESENSI);
+      this.presensi = cachedPresensi ? JSON.parse(cachedPresensi) : [...INITIAL_PRESENSI];
+
+      const cachedLembur = localStorage.getItem(CACHE_KEYS.LEMBUR);
+      this.lembur = cachedLembur ? JSON.parse(cachedLembur) : [...INITIAL_LEMBUR];
+
+      const cachedCalon = localStorage.getItem(CACHE_KEYS.CALON);
+      this.calon = cachedCalon ? JSON.parse(cachedCalon) : [...INITIAL_CALON];
+
+      const cachedMutasi = localStorage.getItem(CACHE_KEYS.MUTASI);
+      this.mutasi = cachedMutasi ? JSON.parse(cachedMutasi) : [...INITIAL_MUTASI];
+
+      const cachedLinks = localStorage.getItem(CACHE_KEYS.LINKS);
+      this.links = cachedLinks ? JSON.parse(cachedLinks) : [...INITIAL_LINKS];
+
+      const cachedPerforma = localStorage.getItem('hrstaff_cache_performa');
+      this.performa = cachedPerforma ? JSON.parse(cachedPerforma) : [];
+
+      // Auto update calculation of sisa hari for PKWT & Calon
+      this.recalculateDynamicDates();
+      this.persistToLocalStorage();
+    } catch (err) {
+      console.warn('Gagal memuat cache lokal, fallback ke data bawaan pabrik:', err);
       this.resetToDefaults();
     }
   }
 
-  public resetToDefaults() {
-    this.staff = [...initialStaffData];
-    this.presensi = [...initialPresensiData];
-    this.lembur = [...initialLemburData];
-    this.calon = [...initialCalonKaryawanData];
-    this.mutasi = [...initialMutasiData];
-    this.slipGaji = [];
-    this.endpointUrl = DEFAULT_GAS_ENDPOINT;
-    this.lastSyncTime = new Date().toISOString();
-    this.persistToLocalStorage();
-    this.notify();
+  private recalculateDynamicDates() {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    // Update Calon Karyawan sisa hari
+    this.calon = this.calon.map((c) => {
+      if (c.tanggalAkhir) {
+        const ta = new Date(c.tanggalAkhir);
+        ta.setHours(0, 0, 0, 0);
+        const sisa = Math.round((ta.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+        return {
+          ...c,
+          sisaHari: c.status === 'Sedang Berjalan' ? sisa : 0,
+        };
+      }
+      return c;
+    });
   }
 
   private persistToLocalStorage() {
     try {
-      const data: LocalCacheSchema = {
-        staff: this.staff,
-        presensi: this.presensi,
-        lembur: this.lembur,
-        calon: this.calon,
-        mutasi: this.mutasi,
-        slipGaji: this.slipGaji,
-        lastSync: this.lastSyncTime,
-        endpointUrl: this.endpointUrl,
-      };
-      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(data));
-    } catch (err) {
-      console.error('Gagal menyimpan cache ke localStorage:', err);
+      localStorage.setItem(CACHE_KEYS.STAFF, JSON.stringify(this.staff));
+      localStorage.setItem(CACHE_KEYS.PRESENSI, JSON.stringify(this.presensi));
+      localStorage.setItem(CACHE_KEYS.LEMBUR, JSON.stringify(this.lembur));
+      localStorage.setItem(CACHE_KEYS.CALON, JSON.stringify(this.calon));
+      localStorage.setItem(CACHE_KEYS.MUTASI, JSON.stringify(this.mutasi));
+      localStorage.setItem(CACHE_KEYS.LINKS, JSON.stringify(this.links));
+      localStorage.setItem(CACHE_KEYS.ENDPOINT_URL, this.endpointUrl);
+      localStorage.setItem(CACHE_KEYS.LAST_SYNC, this.lastSyncTime);
+    } catch (e) {
+      console.error('Penyimpanan localStorage gagal:', e);
     }
+    this.notify();
   }
 
-  public subscribe(listener: () => void): () => void {
-    this.listeners.push(listener);
+  public subscribe(fn: () => void) {
+    this.listeners.push(fn);
     return () => {
-      this.listeners = this.listeners.filter((l) => l !== listener);
+      this.listeners = this.listeners.filter((l) => l !== fn);
     };
   }
 
   private notify() {
-    this.listeners.forEach((listener) => {
-      try {
-        listener();
-      } catch (e) {
-        console.error('Error saat memanggil listener GAS store:', e);
-      }
-    });
+    this.listeners.forEach((fn) => fn());
   }
 
   public getEndpointUrl(): string {
@@ -124,7 +151,7 @@ class GASServiceStore {
 
   public setEndpointUrl(url: string) {
     this.endpointUrl = url.trim();
-    this.persistToLocalStorage();
+    localStorage.setItem(CACHE_KEYS.ENDPOINT_URL, this.endpointUrl);
     this.notify();
   }
 
@@ -132,47 +159,95 @@ class GASServiceStore {
     return this.lastSyncTime;
   }
 
-  public isCurrentlySyncing(): boolean {
+  public isSyncInProgress(): boolean {
     return this.isSyncing;
   }
 
+  /**
+   * Reset seluruh database lokal kembali ke bawaan
+   */
+  public resetToDefaults() {
+    this.staff = [...INITIAL_STAFF];
+    this.presensi = [...INITIAL_PRESENSI];
+    this.lembur = [...INITIAL_LEMBUR];
+    this.calon = [...INITIAL_CALON];
+    this.mutasi = [...INITIAL_MUTASI];
+    this.links = [...INITIAL_LINKS];
+    this.lastSyncTime = new Date().toISOString();
+    this.persistToLocalStorage();
+  }
+
+  /**
+   * Export all cached data as JSON string
+   */
+  public exportCacheJSON(): string {
+    return JSON.stringify(
+      {
+        version: '1.2',
+        exportedAt: new Date().toISOString(),
+        staff: this.staff,
+        presensi: this.presensi,
+        lembur: this.lembur,
+        calon: this.calon,
+        mutasi: this.mutasi,
+        links: this.links,
+      },
+      null,
+      2
+    );
+  }
+
+  /**
+   * Import data from JSON backup
+   */
+  public importCacheJSON(jsonString: string): boolean {
+    try {
+      const data = JSON.parse(jsonString);
+      if (Array.isArray(data.staff)) this.staff = data.staff;
+      if (Array.isArray(data.presensi)) this.presensi = data.presensi;
+      if (Array.isArray(data.lembur)) this.lembur = data.lembur;
+      if (Array.isArray(data.calon)) this.calon = data.calon;
+      if (Array.isArray(data.mutasi)) this.mutasi = data.mutasi;
+      if (Array.isArray(data.links)) this.links = data.links;
+      this.lastSyncTime = new Date().toISOString();
+      this.persistToLocalStorage();
+      return true;
+    } catch (e) {
+      console.error('Import cache gagal:', e);
+      return false;
+    }
+  }
+
+  /**
+   * Ping / Test Koneksi ke GAS Endpoint
+   */
   public async testGASConnection(): Promise<{ success: boolean; latencyMs: number; message: string }> {
     const start = performance.now();
     try {
+      // Send a ping request
       const pingUrl = `${this.endpointUrl}${this.endpointUrl.includes('?') ? '&' : '?'}action=ping`;
       const res = await fetch(pingUrl, {
         method: 'GET',
-        headers: { Accept: 'application/json' },
+        mode: 'no-cors', // Standard Google Apps Script cross-origin
       });
-      const end = performance.now();
-      const latencyMs = Math.round(end - start);
-
-      if (res.ok) {
-        return {
-          success: true,
-          latencyMs,
-          message: 'Koneksi ke Google Apps Script berhasil dan aktif.',
-        };
-      } else {
-        return {
-          success: false,
-          latencyMs,
-          message: `Server merespon dengan status ${res.status}: ${res.statusText}`,
-        };
-      }
+      const latency = Math.round(performance.now() - start);
+      return {
+        success: true,
+        latencyMs: latency,
+        message: `Koneksi ke Headless GAS berhasil direspon (${latency} ms).`,
+      };
     } catch (err: any) {
-      const end = performance.now();
+      const latency = Math.round(performance.now() - start);
       return {
         success: false,
-        latencyMs: Math.round(end - start),
-        message: err.message || 'Gagal menghubungi endpoint Google Apps Script.',
+        latencyMs: latency,
+        message: `Koneksi gagal atau offline: ${err.message || 'CORS / Jaringan timeout'}`,
       };
     }
   }
 
   /**
    * Tarik Data Nyata dari Google Apps Script / Spreadsheet
-   * Dengan Proteksi Pemetaan Kolom Presisi
    */
   public async pullDataFromGAS(): Promise<{
     success: boolean;
@@ -207,27 +282,28 @@ class GASServiceStore {
       let lemburLoaded = 0;
       let calonLoaded = 0;
 
-      const cleanStr = (val: any, fallback = '') => {
-        if (val === undefined || val === null) return fallback;
-        return String(val).trim();
-      };
-
-      const cleanNum = (val: any, fallback = 0) => {
-        if (typeof val === 'number') return val;
-        if (!val) return fallback;
-        const n = Number(String(val).replace(/[^0-9.-]+/g, ''));
-        return isNaN(n) ? fallback : n;
-      };
-
-      // 1. Process Staff List (Filter ID agar tidak masuk ke Nama)
+      // 1. Process Staff List
       if (Array.isArray(data.staffList) && data.staffList.length > 0) {
+        const cleanStr = (val: any, fallback = '') => {
+          if (val === undefined || val === null) return fallback;
+          return String(val).trim();
+        };
+
+        const cleanNum = (val: any, fallback = 0) => {
+          if (typeof val === 'number') return val;
+          if (!val) return fallback;
+          const n = Number(String(val).replace(/[^0-9.-]+/g, ''));
+          return isNaN(n) ? fallback : n;
+        };
+
         const mappedStaff: StaffMember[] = data.staffList
           .filter((item: any) => {
             const rawNama = cleanStr(item.nama || item.namaStaff || item.namaKaryawan || item['NAMA'] || item['NAMA STAFF']);
             if (!rawNama) return false;
             const lower = rawNama.toLowerCase();
+            // Abaikan jika ternyata baris header atau nomor urut
             if (lower === 'id' || lower === 'no' || lower === 'nomor' || lower === 'nama' || lower === 'nama staff') return false;
-            if (/^\d+$/.test(rawNama)) return false; // Abaikan jika cuma nomor angka
+            if (/^\d+$/.test(rawNama)) return false; // Abaikan jika hanya berupa angka (misal "1", "2", "3")
             return true;
           })
           .map((item: any, idx: number) => {
@@ -363,7 +439,7 @@ class GASServiceStore {
               nama: String(c.nama).trim(),
               sekup: (c.sekup || 'Operasional') as any,
               proyeksiJabatan: c.proyeksiJabatan || 'Staff Operasional',
-              mentor: c.mentor || 'Pembimbing Operasional',
+              mentor: c.mentor || 'Lalu Mahendra Ali Akbar',
               tanggalMulai: String(c.tanggalMulai || '2026-01-01').slice(0, 10),
               tanggalAkhir: String(c.tanggalAkhir || '2026-03-31').slice(0, 10),
               durasi,
@@ -378,6 +454,31 @@ class GASServiceStore {
           this.calon = mappedCalon;
           calonLoaded = mappedCalon.length;
         }
+      }
+
+      // 5. Process LOG_PERFORMA (Rekap Presensi & Performa Tahunan Matriks)
+      if (Array.isArray(data.performaList) && data.performaList.length > 0) {
+        this.performa = data.performaList.map((item: any) => {
+          const bulanan = [];
+          for (let m = 1; m <= 12; m++) {
+            bulanan.push({
+              bulan: m,
+              menit: cleanNum(item[`m${m}`] || item[`bulan_${m}`] || item[`bln_${m}`] || item[m] || 0),
+            });
+          }
+          const totalIjin = cleanNum(item.totalIjin || item.totalMenit || bulanan.reduce((s, b) => s + b.menit, 0));
+          const totalTersedia = cleanNum(item.totalTersedia || item.menitKerja || 125280);
+          const pctKehadiran = cleanNum(item.pctKehadiran || item.persen || item.persentase || (100 - (totalIjin / totalTersedia) * 100));
+
+          return {
+            nama: cleanStr(item.nama),
+            bulanan,
+            totalIjin,
+            totalTersedia,
+            pctKehadiran: Math.round(pctKehadiran * 100) / 100,
+          };
+        });
+        localStorage.setItem('hrstaff_cache_performa', JSON.stringify(this.performa));
       }
 
       this.lastSyncTime = new Date().toISOString();
@@ -408,6 +509,9 @@ class GASServiceStore {
     }
   }
 
+  /**
+   * Sync manual dengan GAS
+   */
   public async syncWithGAS(): Promise<{ success: boolean; message: string }> {
     return this.pullDataFromGAS();
   }
@@ -418,15 +522,11 @@ class GASServiceStore {
     return [...this.staff];
   }
 
-  public getStaffById(id: number): StaffMember | undefined {
-    return this.staff.find((s) => s.id === id);
-  }
-
   public getStaffByName(nama: string): StaffMember | undefined {
     return this.staff.find((s) => s.nama.toLowerCase() === nama.toLowerCase());
   }
 
-  public addStaff(newStaff: Omit<StaffMember, 'id'>): StaffMember {
+  public addStaff(newStaff: Omit<StaffMember, 'id'>): { success: boolean; message: string; staff: StaffMember } {
     const nextId = this.staff.length > 0 ? Math.max(...this.staff.map((s) => s.id)) + 1 : 1;
     const item: StaffMember = {
       ...newStaff,
@@ -434,323 +534,582 @@ class GASServiceStore {
     };
     this.staff.push(item);
     this.persistToLocalStorage();
-    this.notify();
-    this.silentSyncToGAS('addStaff', item);
-    return item;
+    return {
+      success: true,
+      message: `${item.nama} berhasil ditambahkan sebagai staff baru (ID ${item.id}).`,
+      staff: item,
+    };
   }
 
-  public updateStaff(id: number, updates: Partial<StaffMember>): boolean {
-    const index = this.staff.findIndex((s) => s.id === id);
-    if (index === -1) return false;
+  public updateStaff(nama: string, updatedFields: Partial<StaffMember>): { success: boolean; message: string } {
+    const idx = this.staff.findIndex((s) => s.nama.toLowerCase() === nama.toLowerCase());
+    if (idx === -1) return { success: false, message: `Staff tidak ditemukan: ${nama}` };
 
-    this.staff[index] = {
-      ...this.staff[index],
-      ...updates,
+    this.staff[idx] = {
+      ...this.staff[idx],
+      ...updatedFields,
     };
     this.persistToLocalStorage();
-    this.notify();
-    this.silentSyncToGAS('updateStaff', this.staff[index]);
-    return true;
+    return { success: true, message: `Profil ${nama} berhasil diperbarui.` };
   }
 
-  public getPresensiList(): PresensiItem[] {
-    return [...this.presensi];
+  // Mutasi Karyawan
+  public submitMutasi(data: {
+    nama: string;
+    tanggalEfektif: string;
+    jenisMutasi: string;
+    nilaiBaru: string;
+    keterangan: string;
+    diinputOleh?: string;
+  }): { success: boolean; message: string } {
+    const staff = this.getStaffByName(data.nama);
+    if (!staff) return { success: false, message: `Staff tidak ditemukan: ${data.nama}` };
+
+    let nilaiLama = '-';
+    // Match fields
+    switch (data.jenisMutasi) {
+      case 'Jabatan':
+        nilaiLama = staff.jabatan;
+        staff.jabatan = data.nilaiBaru;
+        break;
+      case 'Level/Kategori':
+        nilaiLama = staff.level;
+        staff.level = data.nilaiBaru;
+        break;
+      case 'Sekup':
+        nilaiLama = staff.sekup;
+        staff.sekup = data.nilaiBaru as any;
+        break;
+      case 'Status Kepegawaian':
+        nilaiLama = staff.status;
+        staff.status = data.nilaiBaru as any;
+        break;
+      case 'Status Aktif':
+        nilaiLama = staff.statusAktif;
+        staff.statusAktif = data.nilaiBaru as any;
+        break;
+      case 'Gaji Pokok':
+        nilaiLama = 'Rp ' + staff.gajiPokok.toLocaleString('id-ID');
+        staff.gajiPokok = parseFloat(data.nilaiBaru.replace(/[^0-9]/g, '')) || staff.gajiPokok;
+        break;
+      case 'Tunjangan Jabatan':
+        nilaiLama = 'Rp ' + staff.tunjangan.toLocaleString('id-ID');
+        staff.tunjangan = parseFloat(data.nilaiBaru.replace(/[^0-9]/g, '')) || staff.tunjangan;
+        break;
+      case 'Domisili':
+        nilaiLama = staff.domisili;
+        staff.domisili = data.nilaiBaru;
+        break;
+      case 'Proyeksi Jabatan':
+        nilaiLama = staff.proyeksiJabatan || '-';
+        staff.proyeksiJabatan = data.nilaiBaru;
+        break;
+      case 'Sanksi':
+        nilaiLama = staff.sanksi || '-';
+        staff.sanksi = data.nilaiBaru;
+        break;
+      case 'Awal PKWT':
+        nilaiLama = staff.awalPKWT || '-';
+        staff.awalPKWT = data.nilaiBaru;
+        break;
+      case 'Akhir PKWT':
+        nilaiLama = staff.akhirPKWT || '-';
+        staff.akhirPKWT = data.nilaiBaru;
+        break;
+      case 'Limit PKWT':
+        nilaiLama = staff.limitPKWT || '-';
+        staff.limitPKWT = data.nilaiBaru;
+        break;
+      default:
+        break;
+    }
+
+    const d = new Date(data.tanggalEfektif);
+    const mutasiItem: MutasiItem = {
+      row: this.mutasi.length + 6,
+      tanggalEfektif: data.tanggalEfektif,
+      nama: data.nama,
+      jenisMutasi: data.jenisMutasi,
+      nilaiLama: String(nilaiLama),
+      nilaiBaru: data.nilaiBaru,
+      keterangan: data.keterangan || '-',
+      diinputOleh: data.diinputOleh || 'Lalu Mahendra',
+      bulan: isNaN(d.getMonth()) ? 1 : d.getMonth() + 1,
+      tahun: isNaN(d.getFullYear()) ? 2026 : d.getFullYear(),
+    };
+    this.mutasi.unshift(mutasiItem);
+    this.persistToLocalStorage();
+    return { success: true, message: `Mutasi ${data.jenisMutasi} untuk ${data.nama} berhasil dicatat & diterapkan.` };
   }
 
-  public addPresensi(item: Omit<PresensiItem, 'rowNum'>): PresensiItem {
-    const rowNum = this.presensi.length > 0 ? Math.max(...this.presensi.map((p) => p.rowNum)) + 1 : 6;
-    const fullItem: PresensiItem = {
+  public getMutasiHistory(nama?: string): MutasiItem[] {
+    if (!nama) return [...this.mutasi];
+    return this.mutasi.filter((m) => m.nama.toLowerCase() === nama.toLowerCase());
+  }
+
+  // Presensi & Ijin
+  public getPresensiList(bulan?: number, tahun?: number, namaFilter?: string): PresensiItem[] {
+    return this.presensi
+      .filter((p) => {
+        if (bulan && p.bulan !== bulan) return false;
+        if (tahun && p.tahun !== tahun) return false;
+        if (namaFilter && namaFilter !== 'Semua' && p.nama.toLowerCase() !== namaFilter.toLowerCase()) return false;
+        return true;
+      })
+      .sort((a, b) => b.tanggal.localeCompare(a.tanggal) || a.nama.localeCompare(b.nama));
+  }
+
+  public addPresensiSingle(item: Omit<PresensiItem, 'rowNum'>): { success: boolean; message: string } {
+    const nextRow = this.presensi.length > 0 ? Math.max(...this.presensi.map((p) => p.rowNum)) + 1 : 6;
+    const durasi = item.durasi || 0;
+    const faktor = computeFaktorPotongan(item.jenisIjin, durasi);
+
+    const newItem: PresensiItem = {
       ...item,
-      rowNum,
+      rowNum: nextRow,
+      faktorPotongan: faktor,
     };
-    this.presensi.unshift(fullItem);
+    this.presensi.unshift(newItem);
     this.persistToLocalStorage();
-    this.notify();
-    this.silentSyncToGAS('addPresensi', fullItem);
-    return fullItem;
+    return { success: true, message: `Presensi/Ijin untuk ${newItem.nama} berhasil dicatat (baris ${nextRow}).` };
   }
 
-  public getLemburList(): LemburItem[] {
-    return [...this.lembur];
-  }
+  public addPresensiBatch(data: {
+    nama: string;
+    jenisIjin: any;
+    keperluan: string;
+    lampiran: 'Ya' | 'Tidak';
+    catatan?: string;
+    tanggalList: { tanggal: string; jamAwal?: string; jamAkhir?: string; durasi?: number }[];
+  }): { success: boolean; message: string } {
+    let nextRow = this.presensi.length > 0 ? Math.max(...this.presensi.map((p) => p.rowNum)) + 1 : 6;
+    const namaHari = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
+    const staff = this.getStaffByName(data.nama);
 
-  public addLembur(item: Omit<LemburItem, 'rowNum'>): LemburItem {
-    const rowNum = this.lembur.length > 0 ? Math.max(...this.lembur.map((l) => l.rowNum)) + 1 : 6;
-    const fullItem: LemburItem = {
-      ...item,
-      rowNum,
+    data.tanggalList.forEach((t) => {
+      const d = new Date(t.tanggal);
+      const hari = namaHari[d.getDay()];
+      const durasi = t.durasi || 0;
+      const faktor = computeFaktorPotongan(data.jenisIjin, durasi);
+
+      this.presensi.unshift({
+        rowNum: nextRow++,
+        tanggal: t.tanggal,
+        hari: hari,
+        nama: data.nama,
+        sekup: staff?.sekup || 'Operasional',
+        jamAwal: t.jamAwal,
+        jamAkhir: t.jamAkhir,
+        durasi: durasi,
+        jenisIjin: data.jenisIjin,
+        keperluan: data.keperluan,
+        lampiran: data.lampiran,
+        catatan: data.catatan,
+        faktorPotongan: faktor,
+        bulan: d.getMonth() + 1,
+        tahun: d.getFullYear(),
+      });
+    });
+
+    this.persistToLocalStorage();
+    return {
+      success: true,
+      message: `${data.nama}: ${data.tanggalList.length} hari ijin (${data.jenisIjin}) berhasil dicatat sekaligus.`,
     };
-    this.lembur.unshift(fullItem);
-    this.persistToLocalStorage();
-    this.notify();
-    this.silentSyncToGAS('addLembur', fullItem);
-    return fullItem;
   }
 
+  public updatePresensi(rowNum: number, updated: Partial<PresensiItem>): { success: boolean; message: string } {
+    const idx = this.presensi.findIndex((p) => p.rowNum === rowNum);
+    if (idx === -1) return { success: false, message: 'Baris presensi tidak ditemukan.' };
+
+    const current = this.presensi[idx];
+    const durasi = updated.durasi !== undefined ? updated.durasi : current.durasi || 0;
+    const jenisIjin = updated.jenisIjin || current.jenisIjin;
+    const faktor = computeFaktorPotongan(jenisIjin, durasi);
+
+    this.presensi[idx] = {
+      ...current,
+      ...updated,
+      durasi,
+      faktorPotongan: faktor,
+    };
+    this.persistToLocalStorage();
+    return { success: true, message: 'Presensi berhasil diperbarui.' };
+  }
+
+  public deletePresensi(rowNum: number): { success: boolean; message: string } {
+    this.presensi = this.presensi.filter((p) => p.rowNum !== rowNum);
+    this.persistToLocalStorage();
+    return { success: true, message: 'Data presensi/ijin berhasil dihapus.' };
+  }
+
+  // Lembur
+  public getLemburList(tahun?: number): LemburItem[] {
+    return this.lembur
+      .filter((l) => (tahun ? l.tahun === tahun : true))
+      .sort((a, b) => b.tanggal.localeCompare(a.tanggal));
+  }
+
+  public addLemburBatch(data: {
+    tanggal: string;
+    namaList: string[];
+    kategori: any;
+    jamMulai?: string;
+    jamSelesai?: string;
+  }): { success: boolean; message: string; totalNominal: number } {
+    let nextRow = this.lembur.length > 0 ? Math.max(...this.lembur.map((l) => l.rowNum)) + 1 : 6;
+    const d = new Date(data.tanggal);
+    const bulan = d.getMonth() + 1;
+    const tahun = d.getFullYear();
+    let totalNominal = 0;
+
+    data.namaList.forEach((nama) => {
+      const staff = this.getStaffByName(nama);
+      // Flat 2x tarif harian: ((GP + Tunjangan)/26) * 2
+      const gp = staff?.gajiPokok || 3500000;
+      const tunjangan = staff?.tunjangan || 500000;
+      const nominal = Math.round(((gp + tunjangan) / 26) * 2);
+      totalNominal += nominal;
+
+      this.lembur.unshift({
+        rowNum: nextRow++,
+        tanggal: data.tanggal,
+        nama: nama,
+        sekup: staff?.sekup || 'Operasional',
+        kategori: data.kategori,
+        jamMulai: data.jamMulai,
+        jamSelesai: data.jamSelesai,
+        nominal: nominal,
+        bulan: bulan,
+        tahun: tahun,
+      });
+    });
+
+    this.persistToLocalStorage();
+    return {
+      success: true,
+      message: `${data.namaList.length} staff berhasil dicatat lembur (${data.tanggal}, ${data.kategori}).`,
+      totalNominal,
+    };
+  }
+
+  // Calon Karyawan
   public getCalonList(): CalonKaryawanItem[] {
-    return [...this.calon];
+    this.recalculateDynamicDates();
+    return [...this.calon].sort((a, b) => a.sisaHari - b.sisaHari);
   }
 
-  public addCalonKaryawan(item: Omit<CalonKaryawanItem, 'rowNum' | 'sisaHari' | 'durasi'>): CalonKaryawanItem {
-    const rowNum = this.calon.length > 0 ? Math.max(...this.calon.map((c) => c.rowNum)) + 1 : 6;
-    const tm = new Date(item.tanggalMulai);
-    const ta = new Date(item.tanggalAkhir);
+  public addCalon(data: Omit<CalonKaryawanItem, 'rowNum' | 'sisaHari' | 'durasi' | 'status' | 'jumlahPerpanjangan'>): {
+    success: boolean;
+    message: string;
+  } {
+    const nextRow = this.calon.length > 0 ? Math.max(...this.calon.map((c) => c.rowNum)) + 1 : 6;
+    const tm = new Date(data.tanggalMulai);
+    const ta = new Date(data.tanggalAkhir);
     const durasi = Math.max(1, Math.round((ta.getTime() - tm.getTime()) / (1000 * 60 * 60 * 24)) + 1);
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    const sisaHari = Math.round((ta.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+    const sisa = Math.round((ta.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
 
-    const fullItem: CalonKaryawanItem = {
-      ...item,
-      rowNum,
+    const newItem: CalonKaryawanItem = {
+      ...data,
+      rowNum: nextRow,
       durasi,
-      sisaHari,
+      sisaHari: sisa,
+      status: 'Sedang Berjalan',
+      jumlahPerpanjangan: 0,
     };
-    this.calon.unshift(fullItem);
+    this.calon.push(newItem);
     this.persistToLocalStorage();
-    this.notify();
-    this.silentSyncToGAS('addCalon', fullItem);
-    return fullItem;
+    return { success: true, message: `${data.nama} berhasil ditambahkan sebagai calon karyawan.` };
   }
 
-  public updateCalonStatus(
-    rowNum: number, 
-    newStatus: CalonKaryawanItem['status'], 
-    catatan?: string, 
-    newTanggalAkhir?: string
-  ): boolean {
-    const item = this.calon.find((c) => c.rowNum === rowNum);
-    if (!item) return false;
+  public updateStatusCalon(data: {
+    rowNum: number;
+    status: 'Lolos' | 'Diperpanjang' | 'Tidak Lolos';
+    jabatan?: string;
+    gajiPokok?: number;
+    tunjangan?: number;
+    tanggalAkhirBaru?: string;
+    alasan?: string;
+  }): { success: boolean; message: string } {
+    const idx = this.calon.findIndex((c) => c.rowNum === data.rowNum);
+    if (idx === -1) return { success: false, message: 'Calon karyawan tidak ditemukan.' };
 
-    item.status = newStatus;
-    if (catatan) item.catatan = catatan;
+    const c = this.calon[idx];
 
-    if (newStatus === 'Diperpanjang' && newTanggalAkhir) {
-      item.tanggalAkhir = newTanggalAkhir;
-      item.jumlahPerpanjangan = (item.jumlahPerpanjangan || 0) + 1;
-      const tm = new Date(item.tanggalMulai);
-      const ta = new Date(newTanggalAkhir);
-      item.durasi = Math.max(1, Math.round((ta.getTime() - tm.getTime()) / (1000 * 60 * 60 * 24)) + 1);
+    if (data.status === 'Lolos') {
+      // Otomatis masukkan ke Database Karyawan (MASTER_STAFF) dengan status PKWT 1
+      this.addStaff({
+        nama: c.nama,
+        status: 'PKWT 1',
+        jabatan: data.jabatan || c.proyeksiJabatan || 'Staff Operasional',
+        level: 'Staff Pratama',
+        sekup: c.sekup,
+        statusAktif: 'Aktif',
+        jk: 'Laki-laki',
+        nik: '350712' + Math.floor(1000000000 + Math.random() * 9000000000),
+        email: `${c.nama.toLowerCase().replace(/[^a-z0-9]/g, '')}@batukarang.id`,
+        domisili: 'Malang',
+        gajiPokok: data.gajiPokok || 3500000,
+        tunjangan: data.tunjangan || 500000,
+        statusPTKP: 'TK/0',
+        bpjsKesehatanNominal: 100000,
+        proyeksiJabatan: c.proyeksiJabatan,
+        awalPKWT: new Date().toISOString().slice(0, 10),
+        akhirPKWT: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
+        limitPKWT: 'Kontrak PKWT ke-1',
+        plafonLevel: 'Grade 1 - Pelaksana',
+      });
+
+      this.calon[idx] = {
+        ...c,
+        status: 'Lolos (Sudah Jadi Staff)',
+        catatan: (c.catatan ? c.catatan + ' | ' : '') + `Lolos dan diangkat menjadi ${data.jabatan || c.proyeksiJabatan}.`,
+      };
+      this.persistToLocalStorage();
+      return { success: true, message: `${c.nama} LOLOS dan resmi ditambahkan ke Database Karyawan (PKWT 1).` };
+    }
+
+    if (data.status === 'Diperpanjang') {
+      if (!data.tanggalAkhirBaru) return { success: false, message: 'Tanggal akhir baru wajib diisi.' };
+      const ta = new Date(data.tanggalAkhirBaru);
+      const tm = new Date(c.tanggalMulai);
+      const durasi = Math.max(1, Math.round((ta.getTime() - tm.getTime()) / (1000 * 60 * 60 * 24)) + 1);
       const today = new Date();
       today.setHours(0, 0, 0, 0);
-      item.sisaHari = Math.round((ta.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+      const sisa = Math.round((ta.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+
+      this.calon[idx] = {
+        ...c,
+        tanggalAkhir: data.tanggalAkhirBaru,
+        durasi,
+        sisaHari: sisa,
+        status: 'Sedang Berjalan',
+        jumlahPerpanjangan: c.jumlahPerpanjangan + 1,
+        catatan: (c.catatan ? c.catatan + ' | ' : '') + `Diperpanjang s.d ${data.tanggalAkhirBaru}. Alasan: ${data.alasan || '-'}`,
+      };
+      this.persistToLocalStorage();
+      return { success: true, message: `Masa pelatihan ${c.nama} berhasil diperpanjang s.d ${data.tanggalAkhirBaru}.` };
     }
 
-    if (newStatus === 'Lolos') {
-      const existing = this.getStaffByName(item.nama);
-      if (!existing) {
-        this.addStaff({
-          nama: item.nama,
-          status: 'PKWT 1',
-          jabatan: item.proyeksiJabatan || 'Staff Operasional',
-          level: 'Staff Pelaksana',
-          sekup: item.sekup,
-          statusAktif: 'Aktif',
-          jk: 'Laki-laki',
-          nik: `350712${1000000000 + this.staff.length}`,
-          domisili: 'Malang',
-          email: `${item.nama.toLowerCase().replace(/[^a-z0-9]/g, '')}@batukarang.id`,
-          bank: 'BCA',
-          gajiPokok: 3500000,
-          tunjangan: 500000,
-          statusPTKP: 'TK/0',
-          bpjsKesehatanNominal: 100000,
-          proyeksiJabatan: item.proyeksiJabatan,
-          sanksi: '-',
-          awalPKWT: item.tanggalAkhir,
-          akhirPKWT: new Date(new Date(item.tanggalAkhir).setFullYear(new Date(item.tanggalAkhir).getFullYear() + 1))
-            .toISOString()
-            .slice(0, 10),
-          limitPKWT: 'Maks 2 Tahun',
-        });
-      }
+    if (data.status === 'Tidak Lolos') {
+      // Baris dikosongkan/dihapus dari daftar CALON_KARYAWAN
+      this.calon = this.calon.filter((item) => item.rowNum !== data.rowNum);
+      this.persistToLocalStorage();
+      return {
+        success: true,
+        message: `${c.nama} ditandai Tidak Lolos. Baris dihapus dari daftar aktif calon karyawan.`,
+      };
     }
 
+    return { success: false, message: 'Status tidak valid.' };
+  }
+
+  // Link Arsip
+  public getLinksForStaff(nama: string): LinkArsipItem[] {
+    return this.links.filter((l) => l.nama.toLowerCase() === nama.toLowerCase());
+  }
+
+  public addLinkArsip(data: { nama: string; label: string; url: string; diinputOleh?: string }): {
+    success: boolean;
+    message: string;
+  } {
+    const nextRow = this.links.length > 0 ? Math.max(...this.links.map((l) => l.row)) + 1 : 6;
+    this.links.push({
+      row: nextRow,
+      nama: data.nama,
+      label: data.label,
+      url: data.url,
+      tanggalDitambahkan: new Date().toISOString().slice(0, 10),
+      diinputOleh: data.diinputOleh || 'Lalu Mahendra',
+    });
     this.persistToLocalStorage();
-    this.notify();
-    this.silentSyncToGAS('updateCalonStatus', { rowNum, newStatus, catatan, newTanggalAkhir });
-    return true;
+    return { success: true, message: `Link "${data.label}" berhasil disimpan.` };
   }
 
-  public getMutasiList(): MutasiItem[] {
-    return [...this.mutasi];
+  public deleteLinkArsip(rowNum: number): { success: boolean; message: string } {
+    this.links = this.links.filter((l) => l.row !== rowNum);
+    this.persistToLocalStorage();
+    return { success: true, message: 'Link arsip berhasil dihapus.' };
   }
 
-  public addMutasi(item: Omit<MutasiItem, 'id'>): MutasiItem {
-    const nextId = this.mutasi.length > 0 ? Math.max(...this.mutasi.map((m) => m.id)) + 1 : 1;
-    const fullItem: MutasiItem = {
-      ...item,
-      id: nextId,
-    };
-    this.mutasi.unshift(fullItem);
-
-    const staffMember = this.getStaffByName(item.namaStaff);
-    if (staffMember) {
-      this.updateStaff(staffMember.id, {
-        status: item.keStatus,
-        jabatan: item.keJabatan,
-        level: item.keLevel,
-        sekup: item.keSekup,
-        gajiPokok: item.keGajiPokok,
-        tunjangan: item.keTunjangan,
-      });
+  // ================= PERHITUNGAN PAYROLL & SLIP GAJI =================
+  /**
+   * Rumus Payroll TER PMK 168/2023 & Slip Gaji Resmi PT Batu Karang:
+   * (1) BPJS JHT & JP dihitung dari Gaji Pokok + Tunjangan PENUH (H+I), bukan K.
+   * (2) Rate BPJS JP = 1% (cap Rp 11.086.300 per Maret 2026).
+   * (3) BPJS Kesehatan = nominal TETAP per staff (AD).
+   * (4) Potongan Ijin = HariTidakDibayar * ((GajiPokok + Tunjangan) / 26).
+   * (5) Total Lembur = Flat 2x tarif harian per kejadian di bulan/tahun tsb.
+   * (6) Bruto K = GajiPokok + Tunjangan + Lembur - PotonganIjin.
+   * (7) Tarif TER = VLOOKUP Kategori TER A/B/C x Bruto K.
+   * (8) PPh21 = Bruto K * Tarif TER.
+   * (9) Gaji Diterima = Bruto K - (JHT + JP + BPJS Ks + PPh21).
+   */
+  public calculateSlipGaji(nama: string, bulan: number, tahun: number): SlipGajiCalculation {
+    const staff = this.getStaffByName(nama);
+    if (!staff) {
+      throw new Error(`Data staff tidak ditemukan: ${nama}`);
     }
 
-    this.persistToLocalStorage();
-    this.notify();
-    this.silentSyncToGAS('addMutasi', fullItem);
-    return fullItem;
-  }
+    const gp = staff.gajiPokok || 0;
+    const tunjangan = staff.tunjangan || 0;
+    const rateHarian = (gp + tunjangan) / 26;
 
-  public hitungSlipGaji(bulan: number, tahun: number, staffId?: number): SlipGajiItem[] {
-    const targetStaff = staffId ? this.staff.filter((s) => s.id === staffId) : this.staff;
-    const listSlip: SlipGajiItem[] = [];
+    // Hitung Hari Tidak Dibayar (Faktor Potongan) di bulan & tahun tsb
+    const presensiBulan = this.presensi.filter(
+      (p) => p.nama.toLowerCase() === nama.toLowerCase() && p.bulan === bulan && p.tahun === tahun
+    );
+    const hariTidakDibayar = presensiBulan.reduce((sum, p) => sum + (p.faktorPotongan || 0), 0);
+    const potonganIjin = Math.round(hariTidakDibayar * rateHarian);
 
-    const presensiBulan = this.presensi.filter((p) => p.bulan === bulan && p.tahun === tahun);
-    const lemburBulan = this.lembur.filter((l) => l.bulan === bulan && l.tahun === tahun);
+    // Hitung Total Lembur di bulan & tahun tsb
+    const lemburBulan = this.lembur.filter(
+      (l) => l.nama.toLowerCase() === nama.toLowerCase() && l.bulan === bulan && l.tahun === tahun
+    );
+    const totalLembur = lemburBulan.reduce((sum, l) => sum + (l.nominal || 0), 0);
 
-    for (const st of targetStaff) {
-      const gp = st.gajiPokok || 3500000;
-      const tunj = st.tunjangan || 500000;
+    // Total Gaji Bruto K (setelah potongan ijin)
+    const bruto = Math.max(0, gp + tunjangan + totalLembur - potonganIjin);
 
-      const pStaff = presensiBulan.filter((p) => p.nama.toLowerCase() === st.nama.toLowerCase());
-      const lStaff = lemburBulan.filter((l) => l.nama.toLowerCase() === st.nama.toLowerCase());
+    // BPJS JHT (2% dari GP + Tunjangan Penuh)
+    const bpjsJht = Math.round((gp + tunjangan) * 0.02);
 
-      const ratePerHari = (gp + tunj) / 26;
-      let totalPotonganIjin = 0;
-      for (const p of pStaff) {
-        totalPotonganIjin += (p.faktorPotongan || 0) * ratePerHari;
-      }
+    // BPJS JP (1% dari GP + Tunjangan Penuh, maks basis Rp 11.086.300)
+    const basisJp = Math.min(gp + tunjangan, 11086300);
+    const bpjsJp = Math.round(basisJp * 0.01);
+    const totalBpjsTk = bpjsJht + bpjsJp;
 
-      let totalNominalLembur = 0;
-      for (const l of lStaff) {
-        totalNominalLembur += l.nominal || 0;
-      }
+    // BPJS Kesehatan (nominal tetap per staff dari MASTER_STAFF AD)
+    const bpjsKesehatan = staff.bpjsKesehatanNominal || 0;
 
-      const bpjsKesehatan = st.bpjsKesehatanNominal || 100000;
-      const bpjsKetenagakerjaan = Math.round(gp * 0.03);
+    // PPh21 TER (PMK 168/2023)
+    const kategoriTer = getKategoriTER(staff.statusPTKP);
+    const tarifPph21 = getTarifTER(bruto, kategoriTer);
+    const pph21 = Math.round(bruto * tarifPph21);
 
-      const bruto = gp + tunj + totalNominalLembur;
-      let pph21 = 0;
-      if (bruto > 5000000) {
-        const ratePph = st.statusPTKP === 'K/3' ? 0.005 : 0.015;
-        pph21 = Math.round(bruto * ratePph);
-      }
-
-      const totalPotongan = Math.round(totalPotonganIjin + bpjsKesehatan + bpjsKetenagakerjaan + pph21);
-      const gajiBersih = Math.max(0, bruto - totalPotongan);
-
-      listSlip.push({
-        id: `${st.id}-${bulan}-${tahun}`,
-        staffId: st.id,
-        nama: st.nama,
-        jabatan: st.jabatan,
-        sekup: st.sekup,
-        bulan,
-        tahun,
-        gajiPokok: gp,
-        tunjangan: tunj,
-        nominalLembur: totalNominalLembur,
-        potonganIjin: Math.round(totalPotonganIjin),
-        bpjsKesehatan,
-        bpjsKetenagakerjaan,
-        pph21,
-        totalGajiBersih: gajiBersih,
-        statusTransfer: 'Pending',
-      });
-    }
-
-    this.slipGaji = listSlip;
-    this.persistToLocalStorage();
-    this.notify();
-    return listSlip;
-  }
-
-  public getSummaryStatistik(): SummaryStatistik {
-    const totalStaff = this.staff.length;
-    const staffTetap = this.staff.filter((s) => s.status === 'TETAP').length;
-    const staffPKWT = this.staff.filter((s) => s.status.startsWith('PKWT')).length;
-    const calonAktif = this.calon.filter((c) => c.status === 'Sedang Berjalan' || c.status === 'Diperpanjang').length;
-
-    const todayStr = new Date().toISOString().slice(0, 10);
-    const presensiToday = this.presensi.filter((p) => p.tanggal === todayStr);
-
-    const izinHariIni = presensiToday.filter((p) => p.jenisIjin !== 'Hadir').length;
-    const totalIzinBulanIni = this.presensi.filter((p) => p.jenisIjin !== 'Hadir').length;
-    const lemburBulanIni = this.lembur.length;
+    // Gaji Diterima (Take Home Pay)
+    const gajiDiterima = Math.max(0, bruto - bpjsJht - bpjsJp - bpjsKesehatan - pph21);
 
     return {
-      totalStaff,
-      staffTetap,
-      staffPKWT,
-      calonAktif,
-      presensiHariIni: presensiToday.length,
-      izinHariIni,
-      lemburBulanIni,
-      totalIzinBulanIni,
+      nama: staff.nama,
+      jabatan: staff.jabatan,
+      sekup: staff.sekup,
+      bulan,
+      tahun,
+      gajiPokok: gp,
+      tunjangan: tunjangan,
+      totalLembur,
+      hariTidakDibayar,
+      potonganIjin,
+      bruto,
+      bpjsJht,
+      bpjsJp,
+      totalBpjsTk,
+      bpjsKesehatan,
+      kategoriTer,
+      tarifPph21,
+      tarifPph21Percent: (tarifPph21 * 100).toFixed(2) + '%',
+      pph21,
+      gajiDiterima,
+      statusPTKP: staff.statusPTKP || 'TK/0',
     };
   }
 
-  public exportCacheJSON(): string {
-    const data: LocalCacheSchema = {
-      staff: this.staff,
-      presensi: this.presensi,
-      lembur: this.lembur,
-      calon: this.calon,
-      mutasi: this.mutasi,
-      slipGaji: this.slipGaji,
-      lastSync: this.lastSyncTime,
-      endpointUrl: this.endpointUrl,
-    };
-    return JSON.stringify(data, null, 2);
-  }
+  /**
+   * Beban Gaji Dashboard Divisi Produksi I
+   * Gaji Pokok + Tunjangan Jabatan seluruh staff aktif vs Potongan Ijin
+   */
+  public getDashboardBebanGaji(bulan: number, tahun: number) {
+    const aktifStaff = this.staff.filter((s) => s.statusAktif === 'Aktif');
+    let totalKetentuan = 0;
+    let totalPotongan = 0;
 
-  public importCacheJSON(jsonString: string): boolean {
-    try {
-      const parsed = JSON.parse(jsonString);
-      if (parsed.staff && Array.isArray(parsed.staff)) {
-        this.staff = parsed.staff;
-        if (parsed.presensi) this.presensi = parsed.presensi;
-        if (parsed.lembur) this.lembur = parsed.lembur;
-        if (parsed.calon) this.calon = parsed.calon;
-        if (parsed.mutasi) this.mutasi = parsed.mutasi;
-        if (parsed.slipGaji) this.slipGaji = parsed.slipGaji;
-        this.lastSyncTime = new Date().toISOString();
-        this.persistToLocalStorage();
-        this.notify();
-        return true;
+    aktifStaff.forEach((s) => {
+      const nominal = (s.gajiPokok || 0) + (s.tunjangan || 0);
+      totalKetentuan += nominal;
+
+      // Cari presensi bulan ini dari log presensi
+      let faktorStaff = this.presensi
+        .filter((p) => p.nama.toLowerCase() === s.nama.toLowerCase() && p.bulan === bulan && p.tahun === tahun)
+        .reduce((sum, p) => sum + (p.faktorPotongan || 0), 0);
+
+      // Jika log presensi kosong, gunakan data menit izin bulan ini dari LOG_PERFORMA
+      if (faktorStaff === 0 && this.performa.length > 0) {
+        const perf = this.performa.find((p) => p.nama && p.nama.toLowerCase() === s.nama.toLowerCase());
+        if (perf && Array.isArray(perf.bulanan)) {
+          const bulanItem = perf.bulanan.find((b: any) => b.bulan === bulan);
+          if (bulanItem && bulanItem.menit > 0) {
+            faktorStaff = bulanItem.menit / 420; // 420 menit per hari kerja normal
+          }
+        }
       }
-      return false;
-    } catch {
-      return false;
-    }
-  }
 
-  private recalculateDynamicDates() {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
-    this.calon.forEach((c) => {
-      const tm = new Date(c.tanggalMulai);
-      const ta = new Date(c.tanggalAkhir);
-      c.durasi = Math.max(1, Math.round((ta.getTime() - tm.getTime()) / (1000 * 60 * 60 * 24)) + 1);
-      c.sisaHari = Math.round((ta.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+      totalPotongan += Math.round(faktorStaff * (nominal / 26));
     });
+
+    return {
+      jumlahStaffAktif: aktifStaff.length,
+      totalKetentuan,
+      totalPotongan,
+      totalSetelahPotongan: Math.max(0, totalKetentuan - totalPotongan),
+    };
   }
 
-  private async silentSyncToGAS(action: string, payload: any) {
-    if (!this.endpointUrl || this.endpointUrl === DEFAULT_GAS_ENDPOINT) {
-      return;
-    }
-    try {
-      fetch(this.endpointUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action, payload, timestamp: new Date().toISOString() }),
-        mode: 'no-cors',
-      }).catch((e) => console.warn('Silent sync error (normal under no-cors):', e));
-    } catch {}
+  /**
+   * Rekap Tahunan Kehadiran per Staff (Jan - Des)
+   */
+  public getRekapTahunan(tahun: number, namaFilter?: string) {
+    const list = this.staff.filter((s) => {
+      if (namaFilter && namaFilter !== 'Semua') {
+        return s.nama.toLowerCase() === namaFilter.toLowerCase();
+      }
+      return true;
+    });
+
+    const menitPerBulan = 10440; // 26 hari (22x420 + 4x300)
+    const menitPerTahun = menitPerBulan * 12;
+
+    return list.map((s) => {
+      // Prioritaskan matriks LOG_PERFORMA asli jika tersedia
+      const perf = this.performa.find((p) => p.nama && p.nama.toLowerCase() === s.nama.toLowerCase());
+      if (perf && Array.isArray(perf.bulanan) && perf.bulanan.length === 12) {
+        return {
+          nama: s.nama,
+          jabatan: s.jabatan,
+          sekup: s.sekup,
+          bulanan: perf.bulanan,
+          totalIjin: perf.totalIjin || perf.bulanan.reduce((sum: number, b: any) => sum + (b.menit || 0), 0),
+          totalTersedia: perf.totalTersedia || menitPerTahun,
+          pctKehadiran: perf.pctKehadiran,
+        };
+      }
+
+      const bulanan: { bulan: number; menit: number }[] = [];
+      let totalIjin = 0;
+
+      for (let m = 1; m <= 12; m++) {
+        const ijinBulan = this.presensi
+          .filter((p) => p.nama.toLowerCase() === s.nama.toLowerCase() && p.bulan === m && p.tahun === tahun)
+          .reduce((sum, p) => sum + (p.durasi || 0), 0);
+        bulanan.push({ bulan: m, menit: ijinBulan });
+        totalIjin += ijinBulan;
+      }
+
+      const pctKehadiran = Math.max(0, Math.min(100, 100 - (totalIjin / menitPerTahun) * 100));
+
+      return {
+        nama: s.nama,
+        jabatan: s.jabatan,
+        sekup: s.sekup,
+        bulanan,
+        totalIjin,
+        totalTersedia: menitPerTahun,
+        pctKehadiran: Math.round(pctKehadiran * 100) / 100, // 2 decimal precision
+      };
+    });
   }
 }
 
-export const gasStore = new GASServiceStore();
+export const gasStore = new GASDataStore();
