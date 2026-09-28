@@ -2,7 +2,6 @@
  * gasService[HRStaff].ts
  * Headless Google Apps Script (GAS) Service & Offline-First Data Cache Engine
  * PT Batu Karang — Divisi Produksi I
- * Developed by Lalu Mahendra
  */
 
 import {
@@ -51,7 +50,6 @@ class GASDataStore {
   private calon: CalonKaryawanItem[] = [];
   private mutasi: MutasiItem[] = [];
   private links: LinkArsipItem[] = [];
-  private performa: any[] = [];
   private endpointUrl: string = DEFAULT_GAS_ENDPOINT;
   private lastSyncTime: string = '';
   private isSyncing: boolean = false;
@@ -73,10 +71,10 @@ class GASDataStore {
       this.staff = cachedStaff ? JSON.parse(cachedStaff) : [...INITIAL_STAFF];
 
       const cachedPresensi = localStorage.getItem(CACHE_KEYS.PRESENSI);
-      this.presensi = cachedPresensi ? JSON.parse(cachedPresensi) : [...INITIAL_PRESENSI];
+      this.presensi = cachedPresensi ? JSON.parse(cachedPresensi) : [];
 
       const cachedLembur = localStorage.getItem(CACHE_KEYS.LEMBUR);
-      this.lembur = cachedLembur ? JSON.parse(cachedLembur) : [...INITIAL_LEMBUR];
+      this.lembur = cachedLembur ? JSON.parse(cachedLembur) : [];
 
       const cachedCalon = localStorage.getItem(CACHE_KEYS.CALON);
       this.calon = cachedCalon ? JSON.parse(cachedCalon) : [...INITIAL_CALON];
@@ -87,10 +85,6 @@ class GASDataStore {
       const cachedLinks = localStorage.getItem(CACHE_KEYS.LINKS);
       this.links = cachedLinks ? JSON.parse(cachedLinks) : [...INITIAL_LINKS];
 
-      const cachedPerforma = localStorage.getItem('hrstaff_cache_performa');
-      this.performa = cachedPerforma ? JSON.parse(cachedPerforma) : [];
-
-      // Auto update calculation of sisa hari for PKWT & Calon
       this.recalculateDynamicDates();
       this.persistToLocalStorage();
     } catch (err) {
@@ -103,7 +97,6 @@ class GASDataStore {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    // Update Calon Karyawan sisa hari
     this.calon = this.calon.map((c) => {
       if (c.tanggalAkhir) {
         const ta = new Date(c.tanggalAkhir);
@@ -163,13 +156,10 @@ class GASDataStore {
     return this.isSyncing;
   }
 
-  /**
-   * Reset seluruh database lokal kembali ke bawaan
-   */
   public resetToDefaults() {
     this.staff = [...INITIAL_STAFF];
-    this.presensi = [...INITIAL_PRESENSI];
-    this.lembur = [...INITIAL_LEMBUR];
+    this.presensi = [];
+    this.lembur = [];
     this.calon = [...INITIAL_CALON];
     this.mutasi = [...INITIAL_MUTASI];
     this.links = [...INITIAL_LINKS];
@@ -177,9 +167,6 @@ class GASDataStore {
     this.persistToLocalStorage();
   }
 
-  /**
-   * Export all cached data as JSON string
-   */
   public exportCacheJSON(): string {
     return JSON.stringify(
       {
@@ -197,9 +184,6 @@ class GASDataStore {
     );
   }
 
-  /**
-   * Import data from JSON backup
-   */
   public importCacheJSON(jsonString: string): boolean {
     try {
       const data = JSON.parse(jsonString);
@@ -218,18 +202,11 @@ class GASDataStore {
     }
   }
 
-  /**
-   * Ping / Test Koneksi ke GAS Endpoint
-   */
   public async testGASConnection(): Promise<{ success: boolean; latencyMs: number; message: string }> {
     const start = performance.now();
     try {
-      // Send a ping request
       const pingUrl = `${this.endpointUrl}${this.endpointUrl.includes('?') ? '&' : '?'}action=ping`;
-      const res = await fetch(pingUrl, {
-        method: 'GET',
-        mode: 'no-cors', // Standard Google Apps Script cross-origin
-      });
+      const res = await fetch(pingUrl, { method: 'GET', mode: 'no-cors' });
       const latency = Math.round(performance.now() - start);
       return {
         success: true,
@@ -246,9 +223,6 @@ class GASDataStore {
     }
   }
 
-  /**
-   * Tarik Data Nyata dari Google Apps Script / Spreadsheet
-   */
   public async pullDataFromGAS(): Promise<{
     success: boolean;
     message: string;
@@ -262,9 +236,7 @@ class GASDataStore {
       const url = `${this.endpointUrl}${this.endpointUrl.includes('?') ? '&' : '?'}action=getAllData`;
       const response = await fetch(url, {
         method: 'GET',
-        headers: {
-          Accept: 'application/json',
-        },
+        headers: { Accept: 'application/json' },
       });
 
       if (!response.ok) {
@@ -272,7 +244,6 @@ class GASDataStore {
       }
 
       const data = await response.json();
-
       if (data.status !== 'success') {
         throw new Error(data.message || 'Gagal mengambil data dari Google Apps Script');
       }
@@ -294,7 +265,7 @@ class GASDataStore {
         return isNaN(n) ? fallback : n;
       };
 
-      // 1. Process Staff List
+      // 1. Process 32 Staff List
       if (Array.isArray(data.staffList) && data.staffList.length > 0) {
         const mappedStaff: StaffMember[] = data.staffList
           .filter((item: any) => {
@@ -314,9 +285,15 @@ class GASDataStore {
             const rawAktif = cleanStr(item['Status Aktif'] || item['STATUS AKTIF'] || item.statusAktif || item['KEAKTIFAN'] || item['Keaktifan']);
             const statusAktif = rawAktif.toLowerCase().includes('non') ? 'Non Aktif' : 'Aktif';
             const rawStatus = cleanStr(item['Status Kepegawaian'] || item['STATUS KEPEGAWAIAN'] || item['STATUS'] || item.status || 'TETAP');
-            const status = rawStatus.toUpperCase().includes('PKWT 2') ? 'PKWT 2' :
-                           rawStatus.toUpperCase().includes('PKWT 1') ? 'PKWT 1' :
-                           rawStatus.toUpperCase().includes('KONTRAK') ? 'PKWT 1' : 'TETAP';
+            
+            let status = 'TETAP';
+            if (rawStatus.toUpperCase().startsWith('PKWT')) {
+              status = rawStatus.toUpperCase();
+            } else if (rawStatus.toUpperCase().includes('KONTRAK')) {
+              status = 'PKWT 1';
+            } else if (rawStatus.toUpperCase().includes('MAGANG')) {
+              status = 'MAGANG';
+            }
 
             return {
               id: item.id ? Number(item.id) || idx + 1 : idx + 1,
@@ -356,21 +333,21 @@ class GASDataStore {
         }
       }
 
-      // 2. Process Presensi List
-      if (Array.isArray(data.presensiList) && data.presensiList.length > 0) {
-        const mappedPresensi: PresensiItem[] = data.presensiList
-          .filter((p: any) => p.nama && p.tanggal)
+      // 2. Process Presensi List (342 Log Riil)
+      if (Array.isArray(data.presensiList)) {
+        this.presensi = data.presensiList
+          .filter((p: any) => p.nama)
           .map((p: any, idx: number) => {
-            const d = new Date(p.tanggal);
+            const d = new Date(p.tanggal || '2026-01-01');
             const namaHari = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
             const hari = !isNaN(d.getDay()) ? namaHari[d.getDay()] : 'Senin';
-            const durasi = Number(p.durasi) || 0;
-            const jenisIjin = p.jenisIjin || 'Hadir';
+            const durasi = Math.round(Number(p.durasi) || 0);
+            const jenisIjin = p.jenisIjin || 'Ijin';
 
             return {
               rowNum: Number(p.rowNum) || idx + 6,
-              tanggal: String(p.tanggal).slice(0, 10),
-              hari,
+              tanggal: String(p.tanggal || '2026-01-01').slice(0, 10),
+              hari: p.hari || hari,
               nama: String(p.nama).trim(),
               sekup: (p.sekup || 'Operasional') as any,
               jamAwal: p.jamAwal || '07:30',
@@ -383,20 +360,16 @@ class GASDataStore {
               catatan: p.catatan,
               approvalManager: p.approvalManager || 'Disetujui',
               buktiUrl: p.buktiUrl,
-              bulan: !isNaN(d.getMonth()) ? d.getMonth() + 1 : 1,
-              tahun: !isNaN(d.getFullYear()) ? d.getFullYear() : 2026,
+              bulan: Number(p.bulan) || (!isNaN(d.getMonth()) ? d.getMonth() + 1 : 1),
+              tahun: Number(p.tahun) || (!isNaN(d.getFullYear()) ? d.getFullYear() : 2026),
             };
           });
-
-        if (mappedPresensi.length > 0) {
-          this.presensi = mappedPresensi;
-          presensiLoaded = mappedPresensi.length;
-        }
+        presensiLoaded = this.presensi.length;
       }
 
-      // 3. Process Lembur List
-      if (Array.isArray(data.lemburList) && data.lemburList.length > 0) {
-        const mappedLembur: LemburItem[] = data.lemburList
+      // 3. Process Lembur List (Kosongkan jika di pabrik memang belum ada lembur)
+      if (Array.isArray(data.lemburList)) {
+        this.lembur = data.lemburList
           .filter((l: any) => l.nama && l.tanggal)
           .map((l: any, idx: number) => {
             const d = new Date(l.tanggal);
@@ -414,11 +387,7 @@ class GASDataStore {
               tahun: !isNaN(d.getFullYear()) ? d.getFullYear() : 2026,
             };
           });
-
-        if (mappedLembur.length > 0) {
-          this.lembur = mappedLembur;
-          lemburLoaded = mappedLembur.length;
-        }
+        lemburLoaded = this.lembur.length;
       }
 
       // 4. Process Calon Karyawan
@@ -455,31 +424,6 @@ class GASDataStore {
         }
       }
 
-      // 5. Process LOG_PERFORMA (Rekap Presensi & Performa Tahunan Matriks)
-      if (Array.isArray(data.performaList) && data.performaList.length > 0) {
-        this.performa = data.performaList.map((item: any) => {
-          const bulanan = [];
-          for (let m = 1; m <= 12; m++) {
-            bulanan.push({
-              bulan: m,
-              menit: cleanNum(item[`m${m}`] || item[`bulan_${m}`] || item[`bln_${m}`] || item[m] || 0),
-            });
-          }
-          const totalIjin = cleanNum(item.totalIjin || item.totalMenit || bulanan.reduce((s, b) => s + b.menit, 0));
-          const totalTersedia = cleanNum(item.totalTersedia || item.menitKerja || 125280);
-          const pctKehadiran = cleanNum(item.pctKehadiran || item.persen || item.persentase || (100 - (totalIjin / totalTersedia) * 100));
-
-          return {
-            nama: cleanStr(item.nama),
-            bulanan,
-            totalIjin,
-            totalTersedia,
-            pctKehadiran: Math.round(pctKehadiran * 100) / 100,
-          };
-        });
-        localStorage.setItem('hrstaff_cache_performa', JSON.stringify(this.performa));
-      }
-
       this.lastSyncTime = new Date().toISOString();
       this.recalculateDynamicDates();
       this.persistToLocalStorage();
@@ -508,14 +452,9 @@ class GASDataStore {
     }
   }
 
-  /**
-   * Sync manual dengan GAS
-   */
   public async syncWithGAS(): Promise<{ success: boolean; message: string }> {
     return this.pullDataFromGAS();
   }
-
-  // ================= DATA GETTERS & MUTATORS =================
 
   public getStaffList(): StaffMember[] {
     return [...this.staff];
@@ -527,10 +466,7 @@ class GASDataStore {
 
   public addStaff(newStaff: Omit<StaffMember, 'id'>): { success: boolean; message: string; staff: StaffMember } {
     const nextId = this.staff.length > 0 ? Math.max(...this.staff.map((s) => s.id)) + 1 : 1;
-    const item: StaffMember = {
-      ...newStaff,
-      id: nextId,
-    };
+    const item: StaffMember = { ...newStaff, id: nextId };
     this.staff.push(item);
     this.persistToLocalStorage();
     return {
@@ -544,15 +480,11 @@ class GASDataStore {
     const idx = this.staff.findIndex((s) => s.nama.toLowerCase() === nama.toLowerCase());
     if (idx === -1) return { success: false, message: `Staff tidak ditemukan: ${nama}` };
 
-    this.staff[idx] = {
-      ...this.staff[idx],
-      ...updatedFields,
-    };
+    this.staff[idx] = { ...this.staff[idx], ...updatedFields };
     this.persistToLocalStorage();
     return { success: true, message: `Profil ${nama} berhasil diperbarui.` };
   }
 
-  // Mutasi Karyawan
   public submitMutasi(data: {
     nama: string;
     tanggalEfektif: string;
@@ -565,7 +497,6 @@ class GASDataStore {
     if (!staff) return { success: false, message: `Staff tidak ditemukan: ${data.nama}` };
 
     let nilaiLama = '-';
-    // Match fields
     switch (data.jenisMutasi) {
       case 'Jabatan':
         nilaiLama = staff.jabatan;
@@ -646,7 +577,6 @@ class GASDataStore {
     return this.mutasi.filter((m) => m.nama.toLowerCase() === nama.toLowerCase());
   }
 
-  // Presensi & Ijin
   public getPresensiList(bulan?: number, tahun?: number, namaFilter?: string): PresensiItem[] {
     return this.presensi
       .filter((p) => {
@@ -663,11 +593,7 @@ class GASDataStore {
     const durasi = item.durasi || 0;
     const faktor = computeFaktorPotongan(item.jenisIjin, durasi);
 
-    const newItem: PresensiItem = {
-      ...item,
-      rowNum: nextRow,
-      faktorPotongan: faktor,
-    };
+    const newItem: PresensiItem = { ...item, rowNum: nextRow, faktorPotongan: faktor };
     this.presensi.unshift(newItem);
     this.persistToLocalStorage();
     return { success: true, message: `Presensi/Ijin untuk ${newItem.nama} berhasil dicatat (baris ${nextRow}).` };
@@ -726,12 +652,7 @@ class GASDataStore {
     const jenisIjin = updated.jenisIjin || current.jenisIjin;
     const faktor = computeFaktorPotongan(jenisIjin, durasi);
 
-    this.presensi[idx] = {
-      ...current,
-      ...updated,
-      durasi,
-      faktorPotongan: faktor,
-    };
+    this.presensi[idx] = { ...current, ...updated, durasi, faktorPotongan: faktor };
     this.persistToLocalStorage();
     return { success: true, message: 'Presensi berhasil diperbarui.' };
   }
@@ -742,210 +663,21 @@ class GASDataStore {
     return { success: true, message: 'Data presensi/ijin berhasil dihapus.' };
   }
 
-  // Lembur
   public getLemburList(tahun?: number): LemburItem[] {
     return this.lembur
       .filter((l) => (tahun ? l.tahun === tahun : true))
       .sort((a, b) => b.tanggal.localeCompare(a.tanggal));
   }
 
-  public addLemburBatch(data: {
-    tanggal: string;
-    namaList: string[];
-    kategori: any;
-    jamMulai?: string;
-    jamSelesai?: string;
-  }): { success: boolean; message: string; totalNominal: number } {
-    let nextRow = this.lembur.length > 0 ? Math.max(...this.lembur.map((l) => l.rowNum)) + 1 : 6;
-    const d = new Date(data.tanggal);
-    const bulan = d.getMonth() + 1;
-    const tahun = d.getFullYear();
-    let totalNominal = 0;
-
-    data.namaList.forEach((nama) => {
-      const staff = this.getStaffByName(nama);
-      // Flat 2x tarif harian: ((GP + Tunjangan)/26) * 2
-      const gp = staff?.gajiPokok || 3500000;
-      const tunjangan = staff?.tunjangan || 500000;
-      const nominal = Math.round(((gp + tunjangan) / 26) * 2);
-      totalNominal += nominal;
-
-      this.lembur.unshift({
-        rowNum: nextRow++,
-        tanggal: data.tanggal,
-        nama: nama,
-        sekup: staff?.sekup || 'Operasional',
-        kategori: data.kategori,
-        jamMulai: data.jamMulai,
-        jamSelesai: data.jamSelesai,
-        nominal: nominal,
-        bulan: bulan,
-        tahun: tahun,
-      });
-    });
-
-    this.persistToLocalStorage();
-    return {
-      success: true,
-      message: `${data.namaList.length} staff berhasil dicatat lembur (${data.tanggal}, ${data.kategori}).`,
-      totalNominal,
-    };
-  }
-
-  // Calon Karyawan
   public getCalonList(): CalonKaryawanItem[] {
     this.recalculateDynamicDates();
     return [...this.calon].sort((a, b) => a.sisaHari - b.sisaHari);
   }
 
-  public addCalon(data: Omit<CalonKaryawanItem, 'rowNum' | 'sisaHari' | 'durasi' | 'status' | 'jumlahPerpanjangan'>): {
-    success: boolean;
-    message: string;
-  } {
-    const nextRow = this.calon.length > 0 ? Math.max(...this.calon.map((c) => c.rowNum)) + 1 : 6;
-    const tm = new Date(data.tanggalMulai);
-    const ta = new Date(data.tanggalAkhir);
-    const durasi = Math.max(1, Math.round((ta.getTime() - tm.getTime()) / (1000 * 60 * 60 * 24)) + 1);
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const sisa = Math.round((ta.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
-
-    const newItem: CalonKaryawanItem = {
-      ...data,
-      rowNum: nextRow,
-      durasi,
-      sisaHari: sisa,
-      status: 'Sedang Berjalan',
-      jumlahPerpanjangan: 0,
-    };
-    this.calon.push(newItem);
-    this.persistToLocalStorage();
-    return { success: true, message: `${data.nama} berhasil ditambahkan sebagai calon karyawan.` };
-  }
-
-  public updateStatusCalon(data: {
-    rowNum: number;
-    status: 'Lolos' | 'Diperpanjang' | 'Tidak Lolos';
-    jabatan?: string;
-    gajiPokok?: number;
-    tunjangan?: number;
-    tanggalAkhirBaru?: string;
-    alasan?: string;
-  }): { success: boolean; message: string } {
-    const idx = this.calon.findIndex((c) => c.rowNum === data.rowNum);
-    if (idx === -1) return { success: false, message: 'Calon karyawan tidak ditemukan.' };
-
-    const c = this.calon[idx];
-
-    if (data.status === 'Lolos') {
-      // Otomatis masukkan ke Database Karyawan (MASTER_STAFF) dengan status PKWT 1
-      this.addStaff({
-        nama: c.nama,
-        status: 'PKWT 1',
-        jabatan: data.jabatan || c.proyeksiJabatan || 'Staff Operasional',
-        level: 'Staff Pratama',
-        sekup: c.sekup,
-        statusAktif: 'Aktif',
-        jk: 'Laki-laki',
-        nik: '350712' + Math.floor(1000000000 + Math.random() * 9000000000),
-        email: `${c.nama.toLowerCase().replace(/[^a-z0-9]/g, '')}@batukarang.id`,
-        domisili: 'Malang',
-        gajiPokok: data.gajiPokok || 3500000,
-        tunjangan: data.tunjangan || 500000,
-        statusPTKP: 'TK/0',
-        bpjsKesehatanNominal: 100000,
-        proyeksiJabatan: c.proyeksiJabatan,
-        awalPKWT: new Date().toISOString().slice(0, 10),
-        akhirPKWT: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
-        limitPKWT: 'Kontrak PKWT ke-1',
-        plafonLevel: 'Grade 1 - Pelaksana',
-      });
-
-      this.calon[idx] = {
-        ...c,
-        status: 'Lolos (Sudah Jadi Staff)',
-        catatan: (c.catatan ? c.catatan + ' | ' : '') + `Lolos dan diangkat menjadi ${data.jabatan || c.proyeksiJabatan}.`,
-      };
-      this.persistToLocalStorage();
-      return { success: true, message: `${c.nama} LOLOS dan resmi ditambahkan ke Database Karyawan (PKWT 1).` };
-    }
-
-    if (data.status === 'Diperpanjang') {
-      if (!data.tanggalAkhirBaru) return { success: false, message: 'Tanggal akhir baru wajib diisi.' };
-      const ta = new Date(data.tanggalAkhirBaru);
-      const tm = new Date(c.tanggalMulai);
-      const durasi = Math.max(1, Math.round((ta.getTime() - tm.getTime()) / (1000 * 60 * 60 * 24)) + 1);
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      const sisa = Math.round((ta.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
-
-      this.calon[idx] = {
-        ...c,
-        tanggalAkhir: data.tanggalAkhirBaru,
-        durasi,
-        sisaHari: sisa,
-        status: 'Sedang Berjalan',
-        jumlahPerpanjangan: c.jumlahPerpanjangan + 1,
-        catatan: (c.catatan ? c.catatan + ' | ' : '') + `Diperpanjang s.d ${data.tanggalAkhirBaru}. Alasan: ${data.alasan || '-'}`,
-      };
-      this.persistToLocalStorage();
-      return { success: true, message: `Masa pelatihan ${c.nama} berhasil diperpanjang s.d ${data.tanggalAkhirBaru}.` };
-    }
-
-    if (data.status === 'Tidak Lolos') {
-      // Baris dikosongkan/dihapus dari daftar CALON_KARYAWAN
-      this.calon = this.calon.filter((item) => item.rowNum !== data.rowNum);
-      this.persistToLocalStorage();
-      return {
-        success: true,
-        message: `${c.nama} ditandai Tidak Lolos. Baris dihapus dari daftar aktif calon karyawan.`,
-      };
-    }
-
-    return { success: false, message: 'Status tidak valid.' };
-  }
-
-  // Link Arsip
   public getLinksForStaff(nama: string): LinkArsipItem[] {
     return this.links.filter((l) => l.nama.toLowerCase() === nama.toLowerCase());
   }
 
-  public addLinkArsip(data: { nama: string; label: string; url: string; diinputOleh?: string }): {
-    success: boolean;
-    message: string;
-  } {
-    const nextRow = this.links.length > 0 ? Math.max(...this.links.map((l) => l.row)) + 1 : 6;
-    this.links.push({
-      row: nextRow,
-      nama: data.nama,
-      label: data.label,
-      url: data.url,
-      tanggalDitambahkan: new Date().toISOString().slice(0, 10),
-      diinputOleh: data.diinputOleh || 'Lalu Mahendra',
-    });
-    this.persistToLocalStorage();
-    return { success: true, message: `Link "${data.label}" berhasil disimpan.` };
-  }
-
-  public deleteLinkArsip(rowNum: number): { success: boolean; message: string } {
-    this.links = this.links.filter((l) => l.row !== rowNum);
-    this.persistToLocalStorage();
-    return { success: true, message: 'Link arsip berhasil dihapus.' };
-  }
-
-  // ================= PERHITUNGAN PAYROLL & SLIP GAJI =================
-  /**
-   * Rumus Payroll TER PMK 168/2023 & Slip Gaji Resmi PT Batu Karang:
-   * (1) BPJS JHT & JP dihitung dari Gaji Pokok + Tunjangan PENUH (H+I), bukan K.
-   * (2) Rate BPJS JP = 1% (cap Rp 11.086.300 per Maret 2026).
-   * (3) BPJS Kesehatan = nominal TETAP per staff (AD).
-   * (4) Potongan Ijin = HariTidakDibayar * ((GajiPokok + Tunjangan) / 26).
-   * (5) Total Lembur = Flat 2x tarif harian per kejadian di bulan/tahun tsb.
-   * (6) Bruto K = GajiPokok + Tunjangan + Lembur - PotonganIjin.
-   * (7) Tarif TER = VLOOKUP Kategori TER A/B/C x Bruto K.
-   * (8) PPh21 = Bruto K * Tarif TER.
-   * (9) Gaji Diterima = Bruto K - (JHT + JP + BPJS Ks + PPh21).
-   */
   public calculateSlipGaji(nama: string, bulan: number, tahun: number): SlipGajiCalculation {
     const staff = this.getStaffByName(nama);
     if (!staff) {
@@ -956,39 +688,30 @@ class GASDataStore {
     const tunjangan = staff.tunjangan || 0;
     const rateHarian = (gp + tunjangan) / 26;
 
-    // Hitung Hari Tidak Dibayar (Faktor Potongan) di bulan & tahun tsb
     const presensiBulan = this.presensi.filter(
       (p) => p.nama.toLowerCase() === nama.toLowerCase() && p.bulan === bulan && p.tahun === tahun
     );
     const hariTidakDibayar = presensiBulan.reduce((sum, p) => sum + (p.faktorPotongan || 0), 0);
     const potonganIjin = Math.round(hariTidakDibayar * rateHarian);
 
-    // Hitung Total Lembur di bulan & tahun tsb
     const lemburBulan = this.lembur.filter(
       (l) => l.nama.toLowerCase() === nama.toLowerCase() && l.bulan === bulan && l.tahun === tahun
     );
     const totalLembur = lemburBulan.reduce((sum, l) => sum + (l.nominal || 0), 0);
 
-    // Total Gaji Bruto K (setelah potongan ijin)
     const bruto = Math.max(0, gp + tunjangan + totalLembur - potonganIjin);
 
-    // BPJS JHT (2% dari GP + Tunjangan Penuh)
     const bpjsJht = Math.round((gp + tunjangan) * 0.02);
-
-    // BPJS JP (1% dari GP + Tunjangan Penuh, maks basis Rp 11.086.300)
     const basisJp = Math.min(gp + tunjangan, 11086300);
     const bpjsJp = Math.round(basisJp * 0.01);
     const totalBpjsTk = bpjsJht + bpjsJp;
 
-    // BPJS Kesehatan (nominal tetap per staff dari MASTER_STAFF AD)
     const bpjsKesehatan = staff.bpjsKesehatanNominal || 0;
 
-    // PPh21 TER (PMK 168/2023)
     const kategoriTer = getKategoriTER(staff.statusPTKP);
     const tarifPph21 = getTarifTER(bruto, kategoriTer);
     const pph21 = Math.round(bruto * tarifPph21);
 
-    // Gaji Diterima (Take Home Pay)
     const gajiDiterima = Math.max(0, bruto - bpjsJht - bpjsJp - bpjsKesehatan - pph21);
 
     return {
@@ -1016,10 +739,6 @@ class GASDataStore {
     };
   }
 
-  /**
-   * Beban Gaji Dashboard Divisi Produksi I
-   * Gaji Pokok + Tunjangan Jabatan seluruh staff aktif vs Potongan Ijin
-   */
   public getDashboardBebanGaji(bulan: number, tahun: number) {
     const aktifStaff = this.staff.filter((s) => s.statusAktif === 'Aktif');
     let totalKetentuan = 0;
@@ -1029,21 +748,9 @@ class GASDataStore {
       const nominal = (s.gajiPokok || 0) + (s.tunjangan || 0);
       totalKetentuan += nominal;
 
-      // Cari presensi bulan ini dari log presensi
-      let faktorStaff = this.presensi
+      const faktorStaff = this.presensi
         .filter((p) => p.nama.toLowerCase() === s.nama.toLowerCase() && p.bulan === bulan && p.tahun === tahun)
         .reduce((sum, p) => sum + (p.faktorPotongan || 0), 0);
-
-      // Jika log presensi kosong, gunakan data menit izin bulan ini dari LOG_PERFORMA
-      if (faktorStaff === 0 && this.performa.length > 0) {
-        const perf = this.performa.find((p) => p.nama && p.nama.toLowerCase() === s.nama.toLowerCase());
-        if (perf && Array.isArray(perf.bulanan)) {
-          const bulanItem = perf.bulanan.find((b: any) => b.bulan === bulan);
-          if (bulanItem && bulanItem.menit > 0) {
-            faktorStaff = bulanItem.menit / 420; // 420 menit per hari kerja normal
-          }
-        }
-      }
 
       totalPotongan += Math.round(faktorStaff * (nominal / 26));
     });
@@ -1056,9 +763,6 @@ class GASDataStore {
     };
   }
 
-  /**
-   * Rekap Tahunan Kehadiran per Staff (Jan - Des)
-   */
   public getRekapTahunan(tahun: number, namaFilter?: string) {
     const list = this.staff.filter((s) => {
       if (namaFilter && namaFilter !== 'Semua') {
@@ -1067,24 +771,10 @@ class GASDataStore {
       return true;
     });
 
-    const menitPerBulan = 10440; // 26 hari (22x420 + 4x300)
+    const menitPerBulan = 10440;
     const menitPerTahun = menitPerBulan * 12;
 
     return list.map((s) => {
-      // Prioritaskan matriks LOG_PERFORMA asli jika tersedia
-      const perf = this.performa.find((p) => p.nama && p.nama.toLowerCase() === s.nama.toLowerCase());
-      if (perf && Array.isArray(perf.bulanan) && perf.bulanan.length === 12) {
-        return {
-          nama: s.nama,
-          jabatan: s.jabatan,
-          sekup: s.sekup,
-          bulanan: perf.bulanan,
-          totalIjin: perf.totalIjin || perf.bulanan.reduce((sum: number, b: any) => sum + (b.menit || 0), 0),
-          totalTersedia: perf.totalTersedia || menitPerTahun,
-          pctKehadiran: perf.pctKehadiran,
-        };
-      }
-
       const bulanan: { bulan: number; menit: number }[] = [];
       let totalIjin = 0;
 
@@ -1092,8 +782,9 @@ class GASDataStore {
         const ijinBulan = this.presensi
           .filter((p) => p.nama.toLowerCase() === s.nama.toLowerCase() && p.bulan === m && p.tahun === tahun)
           .reduce((sum, p) => sum + (p.durasi || 0), 0);
-        bulanan.push({ bulan: m, menit: ijinBulan });
-        totalIjin += ijinBulan;
+        const menitBulat = Math.round(ijinBulan);
+        bulanan.push({ bulan: m, menit: menitBulat });
+        totalIjin += menitBulat;
       }
 
       const pctKehadiran = Math.max(0, Math.min(100, 100 - (totalIjin / menitPerTahun) * 100));
@@ -1105,7 +796,7 @@ class GASDataStore {
         bulanan,
         totalIjin,
         totalTersedia: menitPerTahun,
-        pctKehadiran: Math.round(pctKehadiran * 100) / 100, // 2 decimal precision
+        pctKehadiran: Math.round(pctKehadiran * 100) / 100,
       };
     });
   }
