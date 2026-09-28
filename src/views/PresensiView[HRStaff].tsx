@@ -43,10 +43,15 @@ const JENIS_IJIN_LIST: JenisIjin[] = [
 
 export const PresensiView: React.FC<PresensiViewProps> = ({ onOpenSuratIjin, userRole }) => {
   const now = new Date();
-  const [selectedBulan, setSelectedBulan] = useState<number>(now.getMonth() + 1);
+  const [selectedBulan, setSelectedBulan] = useState<number>(0);
   const [selectedTahun, setSelectedTahun] = useState<number>(now.getFullYear());
   const [selectedNama, setSelectedNama] = useState<string>('Semua');
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const [tick, setTick] = useState(0);
+
+  React.useEffect(() => {
+    return gasStore.subscribe(() => setTick((t) => t + 1));
+  }, []);
 
   // Modals & Panels
   const [isAddOpen, setIsAddOpen] = useState(false);
@@ -65,7 +70,9 @@ export const PresensiView: React.FC<PresensiViewProps> = ({ onOpenSuratIjin, use
   const [addCatatan, setAddCatatan] = useState('');
 
   const staffList = gasStore.getStaffList();
-  const presensiList = gasStore.getPresensiList(selectedBulan, selectedTahun, selectedNama);
+  const presensiList = useMemo(() => {
+    return gasStore.getPresensiList(selectedBulan, selectedTahun, selectedNama);
+  }, [selectedBulan, selectedTahun, selectedNama, tick]);
 
   // Filtered List
   const filteredList = useMemo(() => {
@@ -325,6 +332,7 @@ export const PresensiView: React.FC<PresensiViewProps> = ({ onOpenSuratIjin, use
               onChange={(e) => setSelectedBulan(Number(e.target.value))}
               className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 font-bold text-slate-800"
             >
+              <option value={0}>Semua Bulan (Jan - Des)</option>
               {BULAN_NAMES.map((name, i) => (
                 <option key={i + 1} value={i + 1}>
                   {name}
